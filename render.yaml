@@ -1,0 +1,15 @@
+# Render Blueprint: deploys the room server as a free web service.
+# Dashboard: New + > Blueprint > pick this repository. Render reads this file.
+# (It deploys the repo's default branch unless you pick another when connecting.)
+services:
+  - type: web
+    name: watch-together
+    runtime: node
+    plan: free
+    buildCommand: npm install
+    startCommand: npm start
+    healthCheckPath: /healthz
+    autoDeploy: true
+    envVars:
+      - key: NODE_VERSION
+        value: "20"

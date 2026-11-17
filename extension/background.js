@@ -4,9 +4,9 @@
 // a cross-origin iframe).
 'use strict';
 
-let cfg = { joined: false, server: '', room: '', name: '' };
+let cfg = { joined: false, server: '', room: '', name: '', password: '', create: false };
 const st = {
-  connected: false, error: '', id: null, hostId: null, everyone: false, mode: 'none',
+  connected: false, error: '', joinError: '', id: null, hostId: null, everyone: false, mode: 'none',
   members: [], media: { src: null, playing: false, pos: 0, at: 0 },
   pageBy: '', pageNew: false, lastEvent: '',
 };
@@ -46,8 +46,8 @@ const normRoom = (r) => String(r || '').toUpperCase().replace(/[^A-Z0-9]/g, '').
 
 function publicState() {
   return {
-    joined: cfg.joined, connected: st.connected, error: st.error,
-    server: cfg.server, room: cfg.room, name: cfg.name,
+    joined: cfg.joined, connected: st.connected, error: st.error, joinError: st.joinError,
+    server: cfg.server, room: cfg.room, name: cfg.name, password: cfg.password, create: !!cfg.create,
     members: st.members, hostId: st.hostId, myId: st.id, everyone: st.everyone,
     canControl: canControl(), videoFound: !!active,
     pageUrl: st.media.src, pageBy: st.pageBy, pageNew: st.pageNew, lastEvent: st.lastEvent,
@@ -85,7 +85,7 @@ function connect() {
   ws = sock;
   sock.onopen = () => {
     retries = 0; st.error = '';
-    sock.send(JSON.stringify({ t: 'join', room: cfg.room, name: cfg.name, ext: true }));
+    sock.send(JSON.stringify({ t: 'join', room: cfg.room, name: cfg.name, ext: true, password: cfg.password, create: !!cfg.create }));
   };
   sock.onmessage = (e) => { try { onServer(JSON.parse(e.data)); } catch (err) { console.error(err); } };
   sock.onerror = () => { st.error = 'Cannot reach the server. Is it running, and is the address right?'; };
@@ -115,6 +115,13 @@ function eventText(m) {
 
 function onServer(m) {
   switch (m.t) {
+    case 'join-error':
+      // wrong password / room missing: stop, and let the popup show why
+      cfg.joined = false; saveCfg();
+      disconnect();
+      st.joinError = m.msg || 'Could not join the room.';
+      elect();
+      break;
     case 'welcome':
       Object.assign(st, { id: m.id, hostId: m.hostId, everyone: m.everyone, mode: m.mode, members: m.members,
         connected: true, error: '', lastEvent: '', pageNew: false, pageBy: '' });
@@ -184,15 +191,18 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
       case 'join': {
         const server = normServer(msg.server), room = normRoom(msg.room);
         const name = String(msg.name || '').trim().slice(0, 24) || 'Guest';
+        const password = String(msg.password || '').trim().slice(0, 64);
         if (!server) return sendResponse({ error: 'Enter the server address (e.g. the ngrok link).' });
         if (room.length < 3) return sendResponse({ error: 'Room code must be at least 3 letters or digits.' });
+        if (password.length < 4) return sendResponse({ error: 'Enter the room password (at least 4 characters).' });
         disconnect();
-        cfg = { joined: true, server, room, name };
+        st.joinError = '';
+        cfg = { joined: true, server, room, name, password, create: !!msg.create };
         saveCfg(); connect(); elect();
         return sendResponse({ ok: true });
       }
       case 'leave':
-        cfg.joined = false; saveCfg(); disconnect(); elect();
+        cfg.joined = false; cfg.password = ''; cfg.create = false; saveCfg(); disconnect(); elect();
         return sendResponse({ ok: true });
       case 'everyone':
         send({ t: 'everyone', value: !!msg.value });

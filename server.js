@@ -1,5 +1,6 @@
 // Watch Together - tiny room server (Express + WebSocket)
 const express = require('express');
+const crypto = require('crypto');
 const http = require('http');
 const os = require('os');
 const path = require('path');
@@ -21,6 +22,20 @@ function lanIps() {
   return out;
 }
 app.get('/api/info', (_req, res) => res.json({ ips: lanIps(), port: PORT }));
+app.get('/healthz', (_req, res) => res.type('text').send('ok'));
+
+// What a person sees before joining: does the room exist, and how many people are in it.
+// (No names and no password are ever returned.)
+app.get('/api/room/:code', (req, res) => {
+  const code = normCode(req.params.code);
+  const r = rooms.get(code);
+  res.set('Cache-Control', 'no-store');
+  if (!r) return res.json({ exists: false });
+  const all = [...r.members.values()];
+  const web = all.filter((m) => !m.ext).length, ext = all.length - web;
+  // someone using both the page and the extension counts once
+  res.json({ exists: true, people: Math.max(web, ext), locked: !!r.password });
+});
 
 const server = http.createServer(app);
 const wss = new WebSocketServer({ server, path: '/ws' });
@@ -37,6 +52,30 @@ const membersList = (r) => [...r.members.values()].map((m) => ({
   id: m.id, name: m.name, ext: !!m.ext, voice: !!m.voice, muted: !!m.muted,
 }));
 const canControl = (r, id) => id === r.hostId || r.everyone;
+const normCode = (c) => String(c || '').toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 12);
+
+// ---- room passwords --------------------------------------------------------
+function passwordOk(room, given) {
+  if (!room.password) return true;
+  const a = Buffer.from(String(given || '')), b = Buffer.from(room.password);
+  return a.length === b.length && crypto.timingSafeEqual(a, b);
+}
+// Slow down password guessing: per address+room and per room overall.
+const FAIL_WINDOW = 10 * 60 * 1000, MAX_FAILS_ADDR = 8, MAX_FAILS_ROOM = 40;
+const fails = new Map();   // key -> { n, since }
+function failState(key) {
+  const f = fails.get(key);
+  if (!f || now() - f.since > FAIL_WINDOW) { const nf = { n: 0, since: now() }; fails.set(key, nf); return nf; }
+  return f;
+}
+const lockedOut = (addr, code) => failState(`a|${addr}|${code}`).n >= MAX_FAILS_ADDR || failState(`r|${code}`).n >= MAX_FAILS_ROOM;
+const recordFail = (addr, code) => { failState(`a|${addr}|${code}`).n++; failState(`r|${code}`).n++; };
+setInterval(() => { for (const [k, f] of fails) if (now() - f.since > FAIL_WINDOW) fails.delete(k); }, 60 * 1000).unref();
+// Behind a proxy (ngrok, Render) the real client is the LAST address the proxy appended.
+function clientAddr(req) {
+  const xff = String(req.headers['x-forwarded-for'] || '').split(',').map((s) => s.trim()).filter(Boolean);
+  return xff.length ? xff[xff.length - 1] : req.socket.remoteAddress || '?';
+}
 
 function broadcast(r, obj, exceptId) {
   for (const m of r.members.values()) if (m.id !== exceptId) send(m.ws, obj);
@@ -57,7 +96,8 @@ function stopShare(r) {
   }
 }
 
-wss.on('connection', (ws) => {
+wss.on('connection', (ws, req) => {
+  const addr = clientAddr(req);
   ws.isAlive = true;
   ws.on('pong', () => { ws.isAlive = true; });
   let room = null;
@@ -68,18 +108,29 @@ wss.on('connection', (ws) => {
 
     if (m.t === 'join') {
       if (room) return;
-      const code = String(m.room || '').toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 12);
+      const code = normCode(m.room);
       if (!code) return;
       const name = String(m.name || 'Guest').trim().slice(0, 24) || 'Guest';
       // m.ext = joined from the Chrome extension (syncs the player inside any site, e.g. vidbox)
       const isExt = !!m.ext;
-      room = rooms.get(code);
-      if (!room) {
+      const pw = String(m.password || '').slice(0, 64);
+      const fail = (reason, msg) => send(ws, { t: 'join-error', reason, msg });
+
+      let target = rooms.get(code);
+      if (!target) {
+        // A room only comes into being when someone explicitly creates it (with a password),
+        // so an old or mistyped link can never spawn an open room.
+        if (!m.create) return fail('no-room', 'This room does not exist, or it has ended. Ask for a fresh link, or create a new room.');
+        if (pw.length < 4) return fail('bad-password', 'A room needs a password of at least 4 characters.');
         // extension rooms start with shared control (a couple watching together); host can lock it
-        room = { code, members: new Map(), hostId: null, everyone: isExt, mode: 'none', sharer: null,
-                 state: { src: null, playing: false, time: 0, ts: now() }, chat: [] };
-        rooms.set(code, room);
+        target = { code, password: pw, members: new Map(), hostId: null, everyone: isExt, mode: 'none', sharer: null,
+                   state: { src: null, playing: false, time: 0, ts: now() }, chat: [] };
+        rooms.set(code, target);
+      } else if (target.password) {
+        if (lockedOut(addr, code)) return fail('too-many', 'Too many wrong passwords. Wait a few minutes and try again.');
+        if (!passwordOk(target, pw)) { recordFail(addr, code); return fail('bad-password', 'Wrong password.'); }
       }
+      room = target;
       me = { id: nextId++, ws, name, ext: isExt };
       room.members.set(me.id, me);
       if (room.hostId == null) room.hostId = me.id;

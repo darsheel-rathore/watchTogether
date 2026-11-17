@@ -3,14 +3,20 @@
   const ICE = { iceServers: [{ urls: 'stun:stun.l.google.com:19302' }, { urls: 'stun:stun1.l.google.com:19302' }] };
 
   const S = {
-    ws: null, id: null, code: null, name: 'Guest', hostId: null, everyone: false,
-    mode: 'none', sharer: null, members: [], src: null, pending: null,
-    localStream: null, pcs: new Map(), viewerPc: null,
-    hls: null, expect: { play: 0, pause: 0, seek: 0 }, lanIps: [], port: location.port, retry: 0,
+    ws: null, id: null, code: null, name: 'Guest', password: '', create: false, created: false,
+    leaving: false, joinFailed: false, retry: 0,
+    hostId: null, everyone: false, mode: 'none', sharer: null, members: [],
+    src: null, pending: null, localStream: null, pcs: new Map(), viewerPc: null, hls: null,
+    expect: { play: 0, pause: 0, seek: 0 }, lanIps: [], port: location.port, unread: 0,
   };
   const video = $('#video');
 
-  // ---------- helpers ----------
+  // ---------- small helpers ----------
+  const store = {
+    get(k) { try { return sessionStorage.getItem(k); } catch { return null; } },
+    set(k, v) { try { sessionStorage.setItem(k, v); } catch {} },
+    del(k) { try { sessionStorage.removeItem(k); } catch {} },
+  };
   let toastTimer;
   function toast(msg, ms = 4000) {
     const t = $('#toast'); t.textContent = msg; t.hidden = false;
@@ -24,66 +30,151 @@
     const h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60), x = s % 60;
     return (h ? h + ':' + String(m).padStart(2, '0') : m) + ':' + String(x).padStart(2, '0');
   };
-  const memberName = (id) => (S.members.find((m) => m.id === id) || {}).name || 'Someone';
+  const peopleCount = (ms) => {
+    const web = ms.filter((m) => !m.ext).length, ext = ms.length - web;
+    return Math.max(web, ext);          // someone using page + extension counts once
+  };
+  const codeFromPath = () => ((location.pathname.match(/^\/room\/([A-Za-z0-9]{3,12})/) || [])[1] || '').toUpperCase();
+  function randomCode() {
+    const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'; const a = new Uint32Array(6); crypto.getRandomValues(a);
+    return [...a].map((n) => chars[n % chars.length]).join('');
+  }
+  function randomPassword() { const a = new Uint32Array(1); crypto.getRandomValues(a); return String(100000 + (a[0] % 900000)); }
+  async function copyText(text, okMsg) {
+    try { await navigator.clipboard.writeText(text); toast(okMsg); }
+    catch { prompt('Copy this:', text); }
+  }
 
   // ---------- landing ----------
-  const pathCode = ((location.pathname.match(/^\/room\/([A-Za-z0-9]{3,12})/) || [])[1] || '').toUpperCase();
   const nameInput = $('#name');
   try { nameInput.value = localStorage.getItem('wt-name') || ''; } catch {}
+  let infoTimer = 0;
 
-  function randomCode() {
-    const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
-    let c = ''; for (let i = 0; i < 6; i++) c += chars[Math.floor(Math.random() * chars.length)];
-    return c;
+  function setErr(msg) { const e = $('#landingErr'); e.hidden = !msg; e.textContent = msg || ''; }
+
+  function setupLanding() {
+    const code = codeFromPath();
+    $('#createBlock').hidden = !!code;
+    $('#linkBlock').hidden = !code;
+    $('#landingSub').textContent = code ? "You've been invited to watch together."
+      : 'Make a room, send the link and password, watch in sync.';
+    clearInterval(infoTimer);
+    if (code) { pollInfo(code); infoTimer = setInterval(() => pollInfo(code), 5000); }
   }
-  function enter(code) {
+  async function pollInfo(code) {
+    const box = $('#roomInfo');
+    let info = null;
+    try { info = await (await fetch('/api/room/' + code, { cache: 'no-store' })).json(); } catch {}
+    if (codeFromPath() !== code) return;
+    box.className = 'roominfo';
+    if (!info) { box.textContent = 'Could not check the room right now. You can still try to join.'; return; }
+    if (!info.exists) {
+      box.classList.add('bad');
+      box.innerHTML = `⚠️ Room <b>${code}</b> doesn't exist, or it has already ended.<br><span class="muted">Ask your partner for a fresh link, or create a new room.</span>`;
+      $('#btnJoinLink').disabled = true; $('#pwLink').disabled = true; $('#btnNewInstead').hidden = false;
+      return;
+    }
+    box.classList.add('ok');
+    const n = info.people;
+    box.innerHTML = `✅ Room <b>${code}</b> is open · 👥 <b>${n}</b> ${n === 1 ? 'person is' : 'people are'} inside` +
+      (info.locked ? '<br><span class="muted">🔒 Enter the password to join.</span>' : '');
+    $('#btnJoinLink').disabled = false; $('#pwLink').disabled = false; $('#btnNewInstead').hidden = true;
+  }
+
+  function showLanding(msg) {
+    $('#landing').hidden = false; $('#room').hidden = true;
+    setupLanding(); setErr(msg);
+    document.title = 'Watch Together';
+  }
+
+  function enter(code, { password, create }) {
     S.name = nameInput.value.trim() || 'Guest';
     try { localStorage.setItem('wt-name', S.name); } catch {}
-    S.code = code;
+    Object.assign(S, { code, password, create: !!create, created: !!create, leaving: false, joinFailed: false, retry: 0 });
+    store.set('wt-room', JSON.stringify({ code, password, create: !!create, name: S.name }));
+    clearInterval(infoTimer);
+    setErr('');
     history.replaceState(null, '', '/room/' + code);
     $('#landing').hidden = true; $('#room').hidden = false;
     $('#roomCode').textContent = code;
+    setConn('warn', 'Connecting…');
     connect();
   }
-  if (pathCode) {
-    $('#createBlock').hidden = true; $('#btnJoinLink').hidden = false;
-    $('#btnJoinLink').textContent = 'Join room ' + pathCode;
-    $('#landingSub').textContent = "You've been invited to watch together.";
-    $('#btnJoinLink').onclick = () => enter(pathCode);
-  }
-  $('#btnCreate').onclick = () => enter(randomCode());
+
+  const createRoom = () => enter(randomCode(), { password: randomPassword(), create: true });
+  $('#btnCreate').onclick = createRoom;
+  $('#btnNewInstead').onclick = () => { history.replaceState(null, '', '/'); createRoom(); };
   $('#btnJoin').onclick = () => {
     const c = $('#codeInput').value.trim().toUpperCase().replace(/[^A-Z0-9]/g, '');
-    if (c.length < 3) return toast('Enter the room code');
-    enter(c);
+    const pw = $('#pwInput').value.trim();
+    if (c.length < 3) return setErr('Enter the room code.');
+    if (!pw) return setErr('Enter the room password.');
+    enter(c, { password: pw, create: false });
   };
-  nameInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') (pathCode ? $('#btnJoinLink') : $('#btnCreate')).click(); });
-  $('#codeInput').addEventListener('keydown', (e) => { if (e.key === 'Enter') $('#btnJoin').click(); });
+  $('#btnJoinLink').onclick = () => {
+    const pw = $('#pwLink').value.trim();
+    if (!pw) return setErr('Enter the room password.');
+    enter(codeFromPath(), { password: pw, create: false });
+  };
+  nameInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') (codeFromPath() ? $('#pwLink') : $('#btnCreate')).focus(); });
+  $('#codeInput').addEventListener('keydown', (e) => { if (e.key === 'Enter') $('#pwInput').focus(); });
+  $('#pwInput').addEventListener('keydown', (e) => { if (e.key === 'Enter') $('#btnJoin').click(); });
+  $('#pwLink').addEventListener('keydown', (e) => { if (e.key === 'Enter') $('#btnJoinLink').click(); });
 
   fetch('/api/info').then((r) => r.json()).then((i) => { S.lanIps = i.ips || []; S.port = i.port; }).catch(() => {});
 
-  $('#btnCopy').onclick = async () => {
+  // ---------- room header: invite, password, leave ----------
+  function inviteLink() {
     let origin = location.origin;
     const local = ['localhost', '127.0.0.1', '[::1]'].includes(location.hostname);
     if (local && S.lanIps.length) origin = `http://${S.lanIps[0]}:${location.port || S.port}`;
-    const link = `${origin}/room/${S.code}`;
-    try { await navigator.clipboard.writeText(link); toast('Copied: ' + link + (local ? '  (works on the same Wi-Fi; use a tunnel link for other networks)' : ''), 6000); }
-    catch { prompt('Copy this link:', link); }
-  };
+    return `${origin}/room/${S.code}`;
+  }
+  const lanNote = () => (['localhost', '127.0.0.1', '[::1]'].includes(location.hostname) ? ' (same Wi-Fi only; use a tunnel or hosted link for other networks)' : '');
+  $('#btnCopy').onclick = () => copyText(inviteLink(), 'Invite link copied' + lanNote());
+  $('#btnInvLink').onclick = $('#btnCopy').onclick;
+  $('#btnInvPw').onclick = () => copyText(S.password, 'Password copied');
+  $('#btnPwCopy').onclick = $('#btnInvPw').onclick;
+  // one line on purpose: the Chrome extension can read it when pasted into its one-line box
+  $('#btnInvBoth').onclick = () => copyText(`Watch Together room: ${inviteLink()} | Password: ${S.password}`, 'Link and password copied');
+  $('#btnInvClose').onclick = () => { $('#invite').hidden = true; store.set('wt-invite-closed-' + S.code, '1'); };
+  let pwShown = false;
+  $('#btnPwShow').onclick = () => { pwShown = !pwShown; $('#pwText').textContent = pwShown ? S.password : '••••••'; };
+
+  function leaveRoom() {
+    S.leaving = true;
+    store.del('wt-room');
+    leaveVoiceLocal(); cleanupRtc(); clearVideo();
+    const ws = S.ws; S.ws = null; if (ws) { try { ws.close(); } catch {} }
+    Object.assign(S, { id: null, mode: 'none', sharer: null, members: [], hostId: null, created: false, password: '' });
+    $('#chat').innerHTML = ''; $('#who').textContent = ''; $('#invite').hidden = true;
+    history.pushState(null, '', '/');
+    showLanding('');
+  }
+  $('#btnLeaveRoom').onclick = () => { if (confirm('Leave this room?')) leaveRoom(); };
+  window.addEventListener('popstate', () => { if (!$('#room').hidden && !codeFromPath()) leaveRoom(); });
+
+  function setConn(kind, text) {
+    const c = $('#conn'); c.className = 'conn ' + (kind === 'ok' ? 'ok' : kind === 'bad' ? 'bad' : '');
+    $('#connText').textContent = text;
+  }
 
   // ---------- websocket ----------
   function connect() {
     const proto = location.protocol === 'https:' ? 'wss' : 'ws';
     const ws = new WebSocket(`${proto}://${location.host}/ws`);
     S.ws = ws;
-    ws.onopen = () => { S.retry = 0; $('#status').textContent = ''; ws.send(JSON.stringify({ t: 'join', room: S.code, name: S.name })); };
+    ws.onopen = () => {
+      S.retry = 0;
+      ws.send(JSON.stringify({ t: 'join', room: S.code, name: S.name, password: S.password, create: S.create }));
+    };
     ws.onmessage = (e) => handle(JSON.parse(e.data));
     ws.onclose = () => {
-      if (S.ws !== ws) return;
+      if (S.ws !== ws || S.leaving || S.joinFailed) return;
       cleanupRtc(); clearVideo(); leaveVoiceLocal();
       S.id = null; S.mode = 'none'; S.sharer = null; render();
-      $('#status').textContent = 'Disconnected, reconnecting…';
-      setTimeout(connect, Math.min(1000 * ++S.retry, 5000));
+      setConn('bad', 'Reconnecting…');
+      setTimeout(() => { if (!S.leaving && !S.joinFailed && S.ws === ws) connect(); }, Math.min(1000 * ++S.retry, 5000));
     };
   }
 
@@ -92,9 +183,21 @@
       case 'welcome':
         S.id = m.id; S.hostId = m.hostId; S.everyone = m.everyone; S.members = m.members;
         S.mode = m.mode; S.sharer = m.sharer;
+        setConn('ok', 'Connected');
         $('#chat').innerHTML = ''; m.chat.forEach(addChat);
+        $('#pwWrap').hidden = !S.created; $('#pwText').textContent = pwShown ? S.password : '••••••';
+        $('#invitePw').textContent = S.password;
+        $('#invite').hidden = !(S.created && !store.get('wt-invite-closed-' + S.code));
         renderMembers(); render();
         if (m.mode === 'video' && m.state.src) applyState(m.state, 0.7);
+        if (m.mode === 'ext') setExtState(m.state);
+        break;
+      case 'join-error':
+        S.joinFailed = true;
+        store.del('wt-room');
+        { const ws = S.ws; S.ws = null; if (ws) try { ws.close(); } catch {} }
+        history.replaceState(null, '', '/room/' + S.code);
+        showLanding(m.msg);
         break;
       case 'members':
         S.members = m.members; S.hostId = m.hostId; S.everyone = m.everyone;
@@ -104,9 +207,13 @@
       case 'chat': addChat(m); break;
       case 'mode': onMode(m.mode, m.sharer); break;
       case 'state':
-        if (S.mode !== 'video') break;
-        applyState(m, m.action === 'sync' ? 1.5 : 0.7);
-        if (m.by && m.action !== 'sync') $('#who').textContent = labelFor(m);
+        if (S.mode === 'video') {
+          applyState(m, m.action === 'sync' ? 1.5 : 0.7);
+          if (m.by && m.action !== 'sync') $('#who').textContent = labelFor(m);
+        } else if (S.mode === 'ext') {
+          setExtState(m);
+          if (m.by && m.action !== 'sync') $('#who').textContent = labelFor(m);
+        }
         break;
       case 'viewers': m.ids.forEach(offerTo); break;
       case 'viewer': if (S.localStream) offerTo(m.id); break;
@@ -128,7 +235,7 @@
     const prev = S.mode;
     S.mode = mode; S.sharer = sharer;
     if (S.localStream && sharer !== S.id) stopLocalStream();
-    if (prev === 'screen' && (mode !== 'screen' || sharer !== S.viewerPc?._from)) closeViewerPc();
+    if (prev === 'screen' && (mode !== 'screen' || sharer !== (S.viewerPc && S.viewerPc._from))) closeViewerPc();
     if (mode !== 'video') { clearVideo(); $('#who').textContent = ''; }
     render();
   }
@@ -144,7 +251,7 @@
     player.classList.toggle('no-control', !canControl());
     $('#idle').hidden = !(S.mode === 'none' || (S.mode === 'video' && !S.src));
     $('#extPanel').hidden = S.mode !== 'ext';
-    ['#rBack', '#rPlay', '#rPause', '#rFwd'].forEach((id) => { $(id).disabled = !canControl(); });
+    ['#rBack', '#rToggle', '#rFwd'].forEach((id) => { $(id).disabled = !canControl(); });
     if (S.mode === 'ext') startExtPing();
     $('#sharingMe').hidden = !sharingMe;
     $('#waitStream').hidden = !(viewingScreen && !video.srcObject);
@@ -155,7 +262,7 @@
       : 'Only the host can pick what plays (host can enable "Let everyone control")';
     const share = $('#btnShare');
     share.disabled = !canControl();
-    share.textContent = sharingMe ? 'Stop sharing' : 'Share my screen / tab';
+    share.textContent = sharingMe ? '⏹ Stop sharing' : '📺 Share my screen / tab';
     $('#everyoneWrap').hidden = S.id !== S.hostId;
     $('#everyone').checked = S.everyone;
     if (!hasVideo) $('#tap').hidden = true;
@@ -164,19 +271,28 @@
   function renderMembers() {
     const ul = $('#members'); ul.innerHTML = '';
     // extension clients are the same people as the page clients, so don't list them twice
-    S.members.filter((m) => !m.ext).forEach((m) => {
-      const li = document.createElement('li');
-      const dot = document.createElement('span'); dot.className = 'dot';
-      const nm = document.createElement('span'); nm.textContent = m.name + (m.id === S.id ? ' (you)' : '');
-      li.append(dot, nm);
+    const shown = S.members.filter((m) => !m.ext);
+    shown.forEach((m) => {
+      const li = document.createElement('li'); li.dataset.id = m.id;
+      const av = document.createElement('span'); av.className = 'avatar'; av.textContent = (m.name[0] || '?').toUpperCase();
+      const nm = document.createElement('span'); nm.className = 'mname'; nm.textContent = m.name + (m.id === S.id ? ' (you)' : '');
+      li.append(av, nm);
       if (m.id === S.hostId) { const b = document.createElement('span'); b.className = 'badge host'; b.textContent = 'host'; li.append(b); }
-      else if (S.everyone) { const b = document.createElement('span'); b.className = 'badge ctl'; b.textContent = 'can control'; li.append(b); }
-      if (m.voice) { const v = document.createElement('span'); v.className = 'vmark'; v.textContent = m.muted ? '🔇' : '🎤'; v.title = m.muted ? 'muted' : 'in voice'; li.append(v); }
+      else if (S.everyone) { const b = document.createElement('span'); b.className = 'badge ctl'; b.textContent = 'controls'; li.append(b); }
+      if (m.voice && m.muted) { const v = document.createElement('span'); v.className = 'vmark'; v.textContent = '🔇'; v.title = 'muted'; li.append(v); }
+      else if (m.voice) {
+        const mt = document.createElement('span'); mt.className = 'meter'; mt.title = 'in voice';
+        for (let i = 0; i < 5; i++) mt.append(document.createElement('i'));
+        li.append(mt);
+      }
       ul.append(li);
     });
     const ext = S.members.filter((m) => m.ext);
     $('#extNote').hidden = !ext.length;
-    $('#extNote').textContent = ext.length ? 'Synced via extension: ' + ext.map((m) => m.name).join(', ') : '';
+    $('#extNote').textContent = ext.length ? '🧩 Synced via extension: ' + ext.map((m) => m.name).join(', ') : '';
+    const n = peopleCount(S.members);
+    $('#peopleCount').textContent = '👥 ' + n;
+    $('#peopleN').textContent = '· ' + n;
   }
 
   function addChat(m) {
@@ -186,9 +302,11 @@
       d.className = 'msg' + (m.id === S.id ? ' me' : '');
       const n = document.createElement('span'); n.className = 'n'; n.textContent = m.name;
       d.append(n, document.createTextNode(m.text));
+      if (m.id !== S.id && document.hidden) { S.unread++; document.title = `(${S.unread}) Watch Together`; }
     }
     box.append(d); box.scrollTop = box.scrollHeight;
   }
+  document.addEventListener('visibilitychange', () => { if (!document.hidden) { S.unread = 0; document.title = 'Watch Together'; } });
   $('#chatForm').onsubmit = (e) => {
     e.preventDefault();
     const i = $('#chatInput'); const text = i.value.trim();
@@ -203,7 +321,7 @@
     if (url) send({ t: 'load', url });
   };
 
-  // ---------- synced video ----------
+  // ---------- synced video (built-in player) ----------
   let hlsPromise;
   function ensureHls() {
     if (window.Hls) return Promise.resolve(window.Hls);
@@ -235,9 +353,7 @@
   function applyState(s, tol) {
     s = { ...s, at: performance.now() };
     if (!s.src) { if (S.src) { clearVideo(); render(); } return; }
-    if (s.src !== S.src) {
-      S.src = s.src; S.pending = s; setSource(s.src); render(); return;
-    }
+    if (s.src !== S.src) { S.src = s.src; S.pending = s; setSource(s.src); render(); return; }
     if (video.readyState === 0) { S.pending = s; return; }
     applyPos(s, tol);
   }
@@ -252,13 +368,11 @@
       video.play().then(() => ($('#tap').hidden = true)).catch(() => { S.expect.play = 0; $('#tap').hidden = false; });
     } else if (!s.playing && !video.paused) { expect('pause'); video.pause(); }
   }
-  // Mark a media event that WE are about to cause (so it is not echoed back to the room).
-  function expect(kind) {
-    S.expect[kind] = Date.now() + 2500;
-  }
+  // mark a media event WE are about to cause, so it is not echoed back to the room
+  function expect(kind) { S.expect[kind] = Date.now() + 2500; }
   function expected(kind) {
-    if (S.expect[kind] && Date.now() < S.expect[kind]) { S.expect[kind] = 0; return true; }
-    S.expect[kind] = 0; return false;
+    const hit = S.expect[kind] && Date.now() < S.expect[kind];
+    S.expect[kind] = 0; return !!hit;
   }
   video.addEventListener('loadedmetadata', () => {
     $('#seek').max = video.duration || 0;
@@ -267,15 +381,15 @@
   video.addEventListener('error', () => { if (S.src) toast('Could not play this link. It may not be a direct video file, or the site blocks embedding.', 7000); });
 
   const userEvt = (action) => {
-    if (expected(action)) return;          // caused by a remote update, don't echo
+    if (expected(action)) return;
     if (S.mode !== 'video' || !canControl()) return;
     send({ t: 'ctl', action, time: video.currentTime });
   };
   video.addEventListener('play', () => userEvt('play'));
-  video.addEventListener('pause', () => userEvt('pause')); // also fires when the video ends
+  video.addEventListener('pause', () => userEvt('pause'));   // also fires at the end of the movie
   video.addEventListener('seeked', () => userEvt('seek'));
 
-  // custom control bar
+  // in-player control bar
   let dragging = false;
   video.addEventListener('timeupdate', () => {
     if (S.mode !== 'video') return;
@@ -291,22 +405,75 @@
   $('#btnFwd').onclick = () => skip(10);
   $('#seek').addEventListener('input', () => { dragging = true; $('#time').textContent = `${fmt($('#seek').value)} / ${fmt(video.duration)}`; });
   $('#seek').addEventListener('change', () => { dragging = false; if (canControl()) video.currentTime = Number($('#seek').value); });
+  function syncMute() { $('#btnMovieMute').textContent = video.muted || video.volume === 0 ? '🔇' : '🔊'; }
   $('#vol').oninput = () => { video.volume = Number($('#vol').value); video.muted = video.volume === 0; syncMute(); };
-  $('#btnMute').onclick = () => { video.muted = !video.muted; syncMute(); };
-  function syncMute() { $('#btnMute').textContent = video.muted || video.volume === 0 ? '🔇' : '🔊'; }
+  $('#btnMovieMute').onclick = () => { video.muted = !video.muted; syncMute(); };
   $('#btnFs').onclick = () => {
     if (document.fullscreenElement) document.exitFullscreen();
     else $('#player').requestFullscreen().catch(() => {});
   };
   $('#tap').onclick = () => { video.play().then(() => ($('#tap').hidden = true)).catch(() => {}); };
+
+  // keyboard: Space = play/pause, arrows = +-10s, F = fullscreen
   document.addEventListener('keydown', (e) => {
-    if (/INPUT|TEXTAREA/.test(document.activeElement.tagName)) return;
-    if (e.code === 'Space' && S.mode === 'video' && S.src) { e.preventDefault(); $('#btnPlay').click(); }
-    if (e.key === 'f') $('#btnFs').click();
+    if (/INPUT|TEXTAREA|SELECT/.test(document.activeElement.tagName) || e.ctrlKey || e.metaKey || e.altKey) return;
+    const inVideo = S.mode === 'video' && S.src, inExt = S.mode === 'ext';
+    if (e.code === 'Space' && (inVideo || inExt)) { e.preventDefault(); (inVideo ? $('#btnPlay') : $('#rToggle')).click(); }
+    else if (e.key === 'ArrowLeft' && (inVideo || inExt)) skip(-10);
+    else if (e.key === 'ArrowRight' && (inVideo || inExt)) skip(10);
+    else if (e.key === 'f' && inVideo) $('#btnFs').click();
   });
 
   // drift correction
   setInterval(() => { if (S.mode === 'video' && S.src) send({ t: 'sync' }); }, 5000);
+
+  // ---------- remote control for extension-synced players (e.g. vidbox) ----------
+  const E = { present: false, muted: false, pings: 0, timer: 0, state: { playing: false, pos: 0, at: 0 } };
+  const cmd = (action, delta) => { if (canControl()) send({ t: 'cmd', action, delta }); };
+  $('#rBack').onclick = () => cmd('skip', -10);
+  $('#rFwd').onclick = () => cmd('skip', 10);
+  $('#rToggle').onclick = () => cmd(E.state.playing ? 'pause' : 'play');
+  $('#rMute').onclick = () => {
+    if (!E.present) return toast('Extension not detected on this page. Reload this page after installing it.', 6000);
+    window.postMessage({ wt: 'page', type: 'mute', muted: !E.muted }, location.origin);
+  };
+  function setExtState(s) {
+    E.state = { playing: !!s.playing, pos: s.pos || 0, at: performance.now() };
+    renderExtClock();
+  }
+  function renderExtClock() {
+    const pos = E.state.pos + (E.state.playing ? (performance.now() - E.state.at) / 1000 : 0);
+    $('#extClock').textContent = fmt(pos);
+    const t = $('#rToggle');
+    t.firstElementChild.textContent = E.state.playing ? '⏸' : '▶';
+    t.lastElementChild.textContent = E.state.playing ? 'Pause' : 'Play';
+  }
+  setInterval(() => { if (S.mode === 'ext') renderExtClock(); }, 500);
+  function renderExt() {
+    $('#rMute').textContent = E.muted ? '🔇 Unmute my movie' : '🔊 Mute my movie';
+    $('#rMute').classList.toggle('muted', E.muted);
+    $('#extStatus').textContent = E.present
+      ? '✓ Extension detected in this browser'
+      : 'Extension not detected here. It is only needed for "Mute my movie".';
+  }
+  // The extension's content script answers these messages on this page.
+  window.addEventListener('message', (e) => {
+    if (e.source !== window || !e.data || e.data.wt !== 'ext') return;
+    if (e.data.type === 'pong') { E.present = true; renderExt(); }
+    else if (e.data.type === 'muteResult') {
+      if (e.data.ok) { E.muted = e.data.muted; renderExt(); }
+      else toast('No movie found in this browser yet. Open it and press play first.', 6000);
+    }
+  });
+  function startExtPing() {
+    if (E.present || E.timer) return renderExt();
+    E.pings = 0;
+    const ping = () => {
+      window.postMessage({ wt: 'page', type: 'ping' }, location.origin);
+      if (E.present || ++E.pings > 5) { clearInterval(E.timer); E.timer = 0; }
+    };
+    E.timer = setInterval(ping, 1500); ping(); renderExt();
+  }
 
   // ---------- screen sharing (WebRTC) ----------
   $('#btnShare').onclick = () => (S.localStream ? stopShare() : startShare());
@@ -314,7 +481,7 @@
 
   async function startShare() {
     if (!navigator.mediaDevices || !navigator.mediaDevices.getDisplayMedia) {
-      return toast('Screen sharing needs a secure page: open this app via http://localhost:' + (location.port || S.port) + ' (or an https tunnel link).', 8000);
+      return toast('Screen sharing needs a secure page: open this app via http://localhost:' + (location.port || S.port) + ' (or an https link).', 8000);
     }
     try {
       const stream = await navigator.mediaDevices.getDisplayMedia({
@@ -399,53 +566,52 @@
     } catch (e) { console.error(e); }
   }
 
-  // ---------- remote control for extension-synced players (e.g. vidbox) ----------
-  const E = { present: false, muted: false, pings: 0, timer: 0 };
-  const cmd = (action, delta) => { if (canControl()) send({ t: 'cmd', action, delta }); };
-  $('#rBack').onclick = () => cmd('skip', -10);
-  $('#rFwd').onclick = () => cmd('skip', 10);
-  $('#rPlay').onclick = () => cmd('play');
-  $('#rPause').onclick = () => cmd('pause');
-  $('#rMute').onclick = () => {
-    if (!E.present) return toast('Extension not detected on this page. Reload this page after installing it.', 6000);
-    window.postMessage({ wt: 'page', type: 'mute', muted: !E.muted }, location.origin);
-  };
-  function renderExt() {
-    $('#rMute').textContent = E.muted ? '🔇 Unmute my movie' : '🔊 Mute my movie';
-    $('#rMute').classList.toggle('muted', E.muted);
-    $('#extStatus').textContent = E.present
-      ? '✓ Extension detected in this browser'
-      : 'Extension not detected here. It is only needed for "Mute my movie".';
-  }
-  // The extension's content script answers these messages on this page.
-  window.addEventListener('message', (e) => {
-    if (e.source !== window || !e.data || e.data.wt !== 'ext') return;
-    if (e.data.type === 'pong') { E.present = true; renderExt(); }
-    else if (e.data.type === 'muteResult') {
-      if (e.data.ok) { E.muted = e.data.muted; renderExt(); }
-      else toast('No movie found in this browser yet. Open it and press play first.', 6000);
-    }
-  });
-  function startExtPing() {
-    if (E.present || E.timer) return renderExt();
-    E.pings = 0;
-    const ping = () => {
-      window.postMessage({ wt: 'page', type: 'ping' }, location.origin);
-      if (E.present || ++E.pings > 5) { clearInterval(E.timer); E.timer = 0; }
-    };
-    E.timer = setInterval(ping, 1500); ping(); renderExt();
-  }
-
   // ---------- voice chat (WebRTC audio, one connection per other person) ----------
-  const V = { on: false, muted: false, stream: null, pcs: new Map() };
+  const V = { on: false, muted: false, stream: null, pcs: new Map(), local: null, meterTimer: 0 };
+  let audioCtx = null;
+  function ensureAudioCtx() {
+    if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    if (audioCtx.state === 'suspended') audioCtx.resume().catch(() => {});
+    return audioCtx;
+  }
+  // level meter source: an analyser reading the loudness of an audio stream
+  function makeAnalyser(stream) {
+    const ctx = ensureAudioCtx();
+    const src = ctx.createMediaStreamSource(stream);
+    const an = ctx.createAnalyser(); an.fftSize = 512;
+    src.connect(an);                       // not connected to speakers: no echo
+    return { an, src, buf: new Float32Array(an.fftSize), level: 0 };
+  }
+  function closeAnalyser(a) { if (!a) return; try { a.src.disconnect(); } catch {} }
+  function readLevel(a) {
+    a.an.getFloatTimeDomainData(a.buf);
+    let sum = 0; for (let i = 0; i < a.buf.length; i++) sum += a.buf[i] * a.buf[i];
+    const rms = Math.sqrt(sum / a.buf.length);
+    const db = 20 * Math.log10(rms || 1e-8);          // -60 dB (silence) .. -6 dB (loud)
+    const raw = Math.min(1, Math.max(0, (db + 60) / 54));
+    a.level = Math.max(raw, a.level * 0.85);          // quick attack, gentle fall
+    return a.level;
+  }
+  function updateMeters() {
+    const levels = new Map();
+    if (V.local && !V.muted) levels.set(S.id, readLevel(V.local));
+    V.pcs.forEach((p, id) => { if (p.an) levels.set(id, readLevel(p.an)); });
+    document.querySelectorAll('#members li[data-id]').forEach((li) => {
+      const lv = levels.get(+li.dataset.id) || 0;
+      const bars = li.querySelectorAll('.meter i');
+      const n = Math.round(lv * 5);
+      bars.forEach((b, i) => { b.className = i < n ? (i < 3 ? 'g' : i === 3 ? 'y' : 'r') : ''; });
+      li.classList.toggle('speaking', bars.length > 0 && lv > 0.2);
+    });
+  }
 
   function renderVoice() {
     $('#btnVoice').hidden = V.on;
     $('#voiceOn').hidden = !V.on;
-    const b = $('#btnMute');
+    const b = $('#btnMic');
     b.textContent = V.muted ? '🔇 Unmute' : '🎤 Mute';
     b.classList.toggle('muted', V.muted);
-    b.classList.toggle('live', !V.muted);
+    b.title = V.muted ? 'You are muted. Click to unmute.' : 'Click to mute your microphone';
   }
 
   async function joinVoice() {
@@ -462,13 +628,17 @@
       return toast(e.name === 'NotAllowedError' ? 'Microphone blocked. Allow it in the address bar and try again.' : 'Could not open the microphone: ' + e.message, 7000);
     }
     V.on = true; V.muted = false;
+    V.local = makeAnalyser(V.stream);
+    V.meterTimer = setInterval(updateMeters, 80);
     renderVoice();
     send({ t: 'voice', on: true });          // server replies with who is already in voice
   }
 
   function leaveVoiceLocal() {
+    clearInterval(V.meterTimer); V.meterTimer = 0;
     V.pcs.forEach((p) => closeVoicePeer(p));
     V.pcs.clear();
+    closeAnalyser(V.local); V.local = null;
     if (V.stream) { V.stream.getTracks().forEach((t) => t.stop()); V.stream = null; }
     V.on = false; V.muted = false;
     renderVoice();
@@ -487,13 +657,14 @@
   }
 
   function closeVoicePeer(p) {
-    try { p.pc.close(); } catch (e) { /* ignore */ }
+    try { p.pc.close(); } catch {}
+    closeAnalyser(p.an);
     if (p.audio) p.audio.remove();
   }
   function newVoicePeer(id) {
     const old = V.pcs.get(id); if (old) closeVoicePeer(old);
     const pc = new RTCPeerConnection(ICE);
-    const p = { pc, q: [], audio: null };
+    const p = { pc, q: [], audio: null, an: null };
     V.pcs.set(id, p);
     V.stream.getAudioTracks().forEach((t) => pc.addTrack(t, V.stream));
     pc.onicecandidate = (e) => e.candidate && send({ t: 'vrtc', to: id, data: { candidate: e.candidate } });
@@ -505,6 +676,7 @@
       }
       p.audio.srcObject = e.streams[0];
       p.audio.play().catch(() => toast('Click anywhere on the page to hear voice chat.'));
+      closeAnalyser(p.an); p.an = makeAnalyser(e.streams[0]);
     };
     return p;
   }
@@ -547,8 +719,19 @@
 
   $('#btnVoice').onclick = joinVoice;
   $('#btnVoiceLeave').onclick = leaveVoice;
-  $('#btnMute').onclick = toggleMute;
+  $('#btnMic').onclick = toggleMute;
   renderVoice();
 
+  // ---------- start ----------
+  // If this tab was already in this room (page reload), rejoin without asking again.
+  const pathCode = codeFromPath();
+  let rec = null;
+  try { rec = JSON.parse(store.get('wt-room') || 'null'); } catch {}
+  if (pathCode && rec && rec.code === pathCode) {
+    nameInput.value = rec.name || nameInput.value;
+    enter(pathCode, { password: rec.password, create: rec.create });
+  } else {
+    setupLanding();
+  }
   render();
 })();

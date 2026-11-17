@@ -16,15 +16,18 @@
     <label>Room code
       <div class="row">
         <input id="room" maxlength="12" placeholder="ABC123" autocomplete="off" spellcheck="false">
-        <button id="btnGen" type="button" title="Make a new code">New</button>
+        <button id="btnGen" type="button" title="Create a new room: makes a code and a password">New</button>
       </div>
+    </label>
+    <label>Password
+      <input id="pw" maxlength="64" placeholder="The room password" autocomplete="off" spellcheck="false">
     </label>
     <label>Your name
       <input id="name" maxlength="24" placeholder="e.g. Darsheel" autocomplete="off">
     </label>
     <button id="btnJoin" class="primary">Join room</button>
     <p id="joinErr" class="err" hidden></p>
-    <p class="hint">Paste the invite link your partner sent, or the server address plus a room code.</p>
+    <p id="joinHint" class="hint">Paste the invite link your partner sent, enter the password, and join. To start a new room, click <b>New</b>.</p>
   </section>
 
   <!-- in a room -->

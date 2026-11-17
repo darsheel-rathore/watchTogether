@@ -8,38 +8,81 @@
 </head>
 <body>
 
-<!-- Landing -->
+<!-- ============ Landing ============ -->
 <main id="landing" class="landing">
   <div class="card">
-    <h1>Watch Together</h1>
-    <p class="muted" id="landingSub">Make a room, send the link, watch in sync.</p>
+    <h1>🎬 Watch Together</h1>
+    <p class="muted" id="landingSub"></p>
+
     <label>Your name
       <input id="name" maxlength="24" placeholder="e.g. Darsheel" autocomplete="off">
     </label>
+
+    <!-- no room in the URL: create one, or join with code + password -->
     <div id="createBlock">
-      <button id="btnCreate" class="primary">Create a room</button>
-      <div class="or"><span>or join with a code</span></div>
+      <button id="btnCreate" class="primary big">Create a room</button>
+      <p class="hint">You'll get a room link and a password to send to your partner.</p>
+      <div class="or"><span>or join a room</span></div>
       <div class="row">
         <input id="codeInput" maxlength="12" placeholder="ROOM CODE" autocomplete="off">
-        <button id="btnJoin">Join</button>
+        <input id="pwInput" maxlength="32" placeholder="Password" inputmode="numeric" autocomplete="off">
       </div>
+      <button id="btnJoin" class="big">Join room</button>
     </div>
-    <button id="btnJoinLink" class="primary" hidden>Join room</button>
+
+    <!-- opened from an invite link -->
+    <div id="linkBlock" hidden>
+      <div class="roominfo" id="roomInfo">Checking room…</div>
+      <label>Password
+        <input id="pwLink" maxlength="32" placeholder="The password your partner sent" inputmode="numeric" autocomplete="off">
+      </label>
+      <button id="btnJoinLink" class="primary big">Join room</button>
+      <button id="btnNewInstead" class="big" hidden>Create a new room instead</button>
+    </div>
+
+    <p id="landingErr" class="err" hidden></p>
   </div>
 </main>
 
-<!-- Room -->
+<!-- ============ Room ============ -->
 <div id="room" class="room" hidden>
-  <header>
-    <div class="brand">Watch Together</div>
-    <div class="code">Room <b id="roomCode"></b></div>
-    <button id="btnCopy">Copy invite link</button>
-    <label id="everyoneWrap" class="toggle" hidden>
-      <input type="checkbox" id="everyone"> Let everyone control
+  <header class="top">
+    <div class="brand">🎬 Watch Together</div>
+
+    <div class="tag">
+      <span class="label">Room</span><b id="roomCode"></b>
+      <span class="count" id="peopleCount" title="People in the room">👥 1</span>
+    </div>
+    <button id="btnCopy" class="chip" title="Copy the room link">🔗 Copy invite link</button>
+
+    <div id="pwWrap" class="tag" hidden>
+      <span class="label">Password</span><b id="pwText" class="mono">••••••</b>
+      <button id="btnPwShow" class="icon" title="Show / hide password">👁</button>
+      <button id="btnPwCopy" class="icon" title="Copy password">⧉</button>
+    </div>
+
+    <label id="everyoneWrap" class="toggle" hidden title="Allow your partner to play, pause and seek">
+      <input type="checkbox" id="everyone"><span>Let everyone control</span>
     </label>
+
     <span class="spacer"></span>
-    <span id="status" class="muted"></span>
+    <span id="conn" class="conn"><i class="dot"></i><span id="connText">Connecting…</span></span>
+    <button id="btnLeaveRoom" class="leave" title="Leave this room">🚪 Leave room</button>
   </header>
+
+  <!-- shown once to whoever created the room -->
+  <div id="invite" class="invite" hidden>
+    <div class="invite-text">
+      <b>🎉 Room created.</b> Send your partner the link <u>and</u> the password:
+      <span class="mono pwbig" id="invitePw"></span>
+    </div>
+    <div class="invite-actions">
+      <button id="btnInvBoth" class="primary">Copy link + password</button>
+      <button id="btnInvLink">Copy link</button>
+      <button id="btnInvPw">Copy password</button>
+      <button id="btnInvClose" class="icon" title="Hide">✕</button>
+    </div>
+  </div>
 
   <section class="main">
     <div class="left">
@@ -48,7 +91,7 @@
           <input id="urlInput" placeholder="Paste a direct video link (.mp4 / .webm / .m3u8)…" autocomplete="off">
           <button type="submit" id="btnLoad">Load</button>
         </form>
-        <button id="btnShare" class="accent">Share my screen / tab</button>
+        <button id="btnShare" class="accent">📺 Share my screen / tab</button>
         <a class="btn" href="https://vidbox.wtf/" target="_blank" rel="noopener">Open vidbox.wtf ↗</a>
       </div>
 
@@ -58,25 +101,28 @@
         <div id="idle" class="overlay">
           <h2>Nothing playing yet</h2>
           <ol>
-            <li><b>For vidbox / any website:</b> click <i>Open vidbox.wtf</i>, start the movie there, come back here and press <i>Share my screen / tab</i> → pick that tab → tick <i>Share tab audio</i>.</li>
-            <li><b>For a direct video link:</b> paste it above and press Load. Play / pause / seek stays in sync for both of you.</li>
+            <li><b>Best for vidbox:</b> both of you install the Chrome extension, join this room from it, open the same movie and press play. Everything stays in sync.</li>
+            <li><b>No extension?</b> Click <i>Open vidbox.wtf</i>, start the movie there, come back and press <i>Share my screen / tab</i> (tick <i>Share tab audio</i>).</li>
+            <li><b>Direct video link:</b> paste it above and press Load.</li>
           </ol>
         </div>
+
         <div id="extPanel" class="overlay" hidden>
-          <h2>Synced through the extension</h2>
-          <p>The movie plays in each person's own vidbox tab. These buttons control everyone's player.</p>
+          <div class="pill">🧩 Extension sync</div>
+          <h2>Everyone watches on their own screen</h2>
+          <div class="clock" id="extClock">0:00</div>
           <div class="remote">
-            <button id="rBack">⏪ 10s</button>
-            <button id="rPlay">▶ Play</button>
-            <button id="rPause">⏸ Pause</button>
-            <button id="rFwd">10s ⏩</button>
+            <button id="rBack" class="rbtn" title="Back 10 seconds (←)"><span>⏪</span><small>10s</small></button>
+            <button id="rToggle" class="rbtn main" title="Play / pause (Space)"><span>▶</span><small>Play</small></button>
+            <button id="rFwd" class="rbtn" title="Forward 10 seconds (→)"><span>⏩</span><small>10s</small></button>
           </div>
-          <div class="remote"><button id="rMute">🔊 Mute my movie</button></div>
+          <button id="rMute" class="pillbtn" title="Mutes the movie in this browser only">🔊 Mute my movie</button>
           <p id="extStatus" class="muted small"></p>
         </div>
+
         <div id="sharingMe" class="overlay" hidden>
           <h2>You are sharing</h2>
-          <p>Go to the movie tab and play it. Everyone here sees it live and hears the sound.<br>Your pause = their pause.</p>
+          <p>Go to the movie tab and play it. Everyone here sees it live and hears the sound.<br>Your pause is their pause.</p>
           <button id="btnStopShare" class="danger">Stop sharing</button>
         </div>
         <div id="waitStream" class="overlay" hidden>
@@ -86,38 +132,45 @@
         <button id="tap" class="tap" hidden>▶ Tap to start</button>
 
         <div id="bar" class="bar" hidden>
-          <button id="btnBack" title="Back 10 seconds">⏪10</button>
-          <button id="btnPlay" title="Play / pause">▶</button>
-          <button id="btnFwd" title="Forward 10 seconds">10⏩</button>
+          <button id="btnBack" title="Back 10 seconds (←)">⏪ 10</button>
+          <button id="btnPlay" class="playbtn" title="Play / pause (Space)">▶</button>
+          <button id="btnFwd" title="Forward 10 seconds (→)">10 ⏩</button>
           <input id="seek" type="range" min="0" max="0" step="0.1" value="0">
           <span id="time" class="time">0:00 / 0:00</span>
-          <button id="btnMute" title="Mute">🔊</button>
+          <button id="btnMovieMute" title="Mute / unmute the movie">🔊</button>
           <input id="vol" type="range" min="0" max="1" step="0.05" value="1">
-          <button id="btnFs" title="Fullscreen">⛶</button>
+          <button id="btnFs" title="Fullscreen (F)">⛶</button>
         </div>
       </div>
       <div id="who" class="muted small"></div>
     </div>
 
     <aside class="side">
-      <h3>People</h3>
-      <ul id="members"></ul>
-      <p id="extNote" class="muted small" hidden></p>
-      <div class="voice">
-        <button id="btnVoice">🎤 Join voice</button>
-        <div id="voiceOn" class="row" hidden>
-          <button id="btnMute">Mute</button>
-          <button id="btnVoiceLeave">Leave voice</button>
+      <section class="panel">
+        <h3>People <span id="peopleN" class="muted"></span></h3>
+        <ul id="members"></ul>
+        <p id="extNote" class="muted small" hidden></p>
+      </section>
+
+      <section class="panel">
+        <h3>Voice</h3>
+        <button id="btnVoice" class="voicejoin">🎤 Join voice</button>
+        <div id="voiceOn" class="voiceon" hidden>
+          <button id="btnMic" class="mic">🎤 Mute</button>
+          <button id="btnVoiceLeave" class="ghostred">Leave voice</button>
         </div>
         <p class="muted small">Use headphones so the movie doesn't echo into the mic.</p>
-      </div>
-      <div id="audioBox" hidden></div>
-      <h3>Chat</h3>
-      <div id="chat" class="chat"></div>
-      <form id="chatForm" class="row">
-        <input id="chatInput" placeholder="Say something…" autocomplete="off" maxlength="500">
-        <button type="submit">Send</button>
-      </form>
+        <div id="audioBox" hidden></div>
+      </section>
+
+      <section class="panel chatpanel">
+        <h3>Chat</h3>
+        <div id="chat" class="chat"></div>
+        <form id="chatForm" class="row">
+          <input id="chatInput" placeholder="Say something…" autocomplete="off" maxlength="500">
+          <button type="submit">Send</button>
+        </form>
+      </section>
     </aside>
   </section>
 </div>
