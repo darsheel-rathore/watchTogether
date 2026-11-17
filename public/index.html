@@ -110,19 +110,15 @@
         <div id="extPanel" class="overlay" hidden>
           <div class="pill">🧩 Extension sync</div>
           <h2>Everyone watches on their own screen</h2>
-          <div class="clock" id="extClock">0:00</div>
-          <div class="remote">
-            <button id="rBack" class="rbtn" title="Back 10 seconds (←)"><span>⏪</span><small>10s</small></button>
-            <button id="rToggle" class="rbtn main" title="Play / pause (Space)"><span>▶</span><small>Play</small></button>
-            <button id="rFwd" class="rbtn" title="Forward 10 seconds (→)"><span>⏩</span><small>10s</small></button>
-          </div>
-          <button id="rMute" class="pillbtn" title="Mutes the movie in this browser only">🔊 Mute my movie</button>
+          <div class="clock" id="extClock">--:--</div>
+          <p>Use the controls below. They play, pause and skip the movie for everyone.</p>
           <p id="extStatus" class="muted small"></p>
         </div>
 
         <div id="sharingMe" class="overlay" hidden>
           <h2>You are sharing</h2>
-          <p>Go to the movie tab and play it. Everyone here sees it live and hears the sound.<br>Your pause is their pause.</p>
+          <p>Go to the movie tab and play it. Everyone here sees it live and hears the sound.</p>
+          <p id="shareCtlNote" class="muted small"></p>
           <button id="btnStopShare" class="danger">Stop sharing</button>
         </div>
         <div id="waitStream" class="overlay" hidden>
@@ -141,6 +137,20 @@
           <input id="vol" type="range" min="0" max="1" step="0.05" value="1">
           <button id="btnFs" title="Fullscreen (F)">⛶</button>
         </div>
+      </div>
+
+      <!-- always-visible playback controls (work for every mode they can) -->
+      <div id="controls" class="controls">
+        <button id="cBack" title="Back 10 seconds (←)">⏪ 10</button>
+        <button id="cPlay" class="cplay" title="Play / pause (Space)">▶</button>
+        <button id="cFwd" title="Forward 10 seconds (→)">10 ⏩</button>
+        <input id="cSeek" type="range" min="0" max="0" step="0.1" value="0" hidden>
+        <span id="cTime" class="ctime">--:--</span>
+        <span id="cHint" class="chint"></span>
+        <span class="cgrow"></span>
+        <button id="cMute" title="Mute / unmute the movie">🔊</button>
+        <input id="cVol" type="range" min="0" max="1" step="0.05" value="1" title="Volume">
+        <button id="cFs" title="Fullscreen (F)">⛶</button>
       </div>
       <div id="who" class="muted small"></div>
     </div>

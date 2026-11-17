@@ -74,8 +74,10 @@ Open the room in a normal tab as well. You get:
 
 - **Voice chat**: green **Join voice**, a big **Mute / Unmute** button, and a level meter next to each person (green, yellow, red) so you can see who is talking. Use headphones so the movie doesn't echo into the mic.
 - Text chat, a people list with the count, and a red **Leave room** button.
-- **Remote buttons** (⏪ 10s, Play / Pause, 10s ⏩) that control everyone's player. Keyboard: Space, ← and →.
-- **Mute my movie**: mutes the movie in your own browser only (needs the extension).
+- A **control bar under the player**, always visible: ⏪ 10, Play / Pause, 10 ⏩, time, mute, volume, fullscreen. Keyboard: Space, ← and →, F. When a button can't do anything yet, it is greyed out and the bar says why.
+  - Direct link: controls the built-in player for everyone.
+  - Extension sync: controls everyone's vidbox player; mute only mutes the movie in your own browser.
+  - Screen share: the viewer can play, pause and skip **if the person sharing has also joined the room from the extension** in the same browser. The command goes to the sharer's extension, which pauses the real player, so the stream pauses too.
 
 ## Known limits
 

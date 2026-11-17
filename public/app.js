@@ -8,6 +8,8 @@
     hostId: null, everyone: false, mode: 'none', sharer: null, members: [],
     src: null, pending: null, localStream: null, pcs: new Map(), viewerPc: null, hls: null,
     expect: { play: 0, pause: 0, seek: 0 }, lanIps: [], port: location.port, unread: 0,
+    // where the movie is when it plays in people's own browsers (extension / screen share)
+    room: { playing: false, pos: 0, at: 0, known: false }, whoUntil: 0,
   };
   const video = $('#video');
 
@@ -190,7 +192,7 @@
         $('#invite').hidden = !(S.created && !store.get('wt-invite-closed-' + S.code));
         renderMembers(); render();
         if (m.mode === 'video' && m.state.src) applyState(m.state, 0.7);
-        if (m.mode === 'ext') setExtState(m.state);
+        else setRoomState(m.state);
         break;
       case 'join-error':
         S.joinFailed = true;
@@ -207,13 +209,15 @@
       case 'chat': addChat(m); break;
       case 'mode': onMode(m.mode, m.sharer); break;
       case 'state':
-        if (S.mode === 'video') {
-          applyState(m, m.action === 'sync' ? 1.5 : 0.7);
-          if (m.by && m.action !== 'sync') $('#who').textContent = labelFor(m);
-        } else if (S.mode === 'ext') {
-          setExtState(m);
-          if (m.by && m.action !== 'sync') $('#who').textContent = labelFor(m);
-        }
+        if (S.mode === 'video') applyState(m, m.action === 'sync' ? 1.5 : 0.7);
+        else if (S.mode === 'ext' || S.mode === 'screen') setRoomState(m);
+        if (m.by && m.action !== 'sync' && Date.now() > S.whoUntil) $('#who').textContent = labelFor(m);
+        renderControls();
+        break;
+      case 'remote':
+        // someone pressed a button on their room page; the extension reports the result as 'state'
+        $('#who').textContent = remoteLabel(m);
+        S.whoUntil = Date.now() + 2500;
         break;
       case 'viewers': m.ids.forEach(offerTo); break;
       case 'viewer': if (S.localStream) offerTo(m.id); break;
@@ -230,9 +234,12 @@
       m.action === 'play' ? `${m.by} pressed play at ${t}` :
       m.action === 'pause' ? `${m.by} paused at ${t}` : `${m.by} jumped to ${t}`;
   }
+  const remoteLabel = (m) => (m.action === 'play' ? `${m.by} pressed play`
+    : m.action === 'pause' ? `${m.by} paused` : `${m.by} skipped ${m.delta > 0 ? '+' : ''}${m.delta}s`);
 
   function onMode(mode, sharer) {
     const prev = S.mode;
+    if (prev !== mode || S.sharer !== sharer) S.room = { playing: false, pos: 0, at: performance.now(), known: false };
     S.mode = mode; S.sharer = sharer;
     if (S.localStream && sharer !== S.id) stopLocalStream();
     if (prev === 'screen' && (mode !== 'screen' || sharer !== (S.viewerPc && S.viewerPc._from))) closeViewerPc();
@@ -251,7 +258,6 @@
     player.classList.toggle('no-control', !canControl());
     $('#idle').hidden = !(S.mode === 'none' || (S.mode === 'video' && !S.src));
     $('#extPanel').hidden = S.mode !== 'ext';
-    ['#rBack', '#rToggle', '#rFwd'].forEach((id) => { $(id).disabled = !canControl(); });
     if (S.mode === 'ext') startExtPing();
     $('#sharingMe').hidden = !sharingMe;
     $('#waitStream').hidden = !(viewingScreen && !video.srcObject);
@@ -266,6 +272,7 @@
     $('#everyoneWrap').hidden = S.id !== S.hostId;
     $('#everyone').checked = S.everyone;
     if (!hasVideo) $('#tap').hidden = true;
+    renderControls();
   }
 
   function renderMembers() {
@@ -398,9 +405,8 @@
   });
   video.addEventListener('play', () => ($('#btnPlay').textContent = '❚❚'));
   video.addEventListener('pause', () => ($('#btnPlay').textContent = '▶'));
-  $('#btnPlay').onclick = () => { if (!canControl()) return; video.paused ? video.play().catch(() => {}) : video.pause(); };
-  // skip buttons go through the server so every player jumps to the same spot
-  const skip = (d) => { if (canControl()) send({ t: 'cmd', action: 'skip', delta: d }); };
+  // (this bar is only shown in fullscreen; the strip under the player does the same)
+  $('#btnPlay').onclick = () => togglePlay();
   $('#btnBack').onclick = () => skip(-10);
   $('#btnFwd').onclick = () => skip(10);
   $('#seek').addEventListener('input', () => { dragging = true; $('#time').textContent = `${fmt($('#seek').value)} / ${fmt(video.duration)}`; });
@@ -415,46 +421,138 @@
   $('#tap').onclick = () => { video.play().then(() => ($('#tap').hidden = true)).catch(() => {}); };
 
   // keyboard: Space = play/pause, arrows = +-10s, F = fullscreen
+  // (ignored while typing, and while a button has focus: Space already clicks that button)
   document.addEventListener('keydown', (e) => {
-    if (/INPUT|TEXTAREA|SELECT/.test(document.activeElement.tagName) || e.ctrlKey || e.metaKey || e.altKey) return;
-    const inVideo = S.mode === 'video' && S.src, inExt = S.mode === 'ext';
-    if (e.code === 'Space' && (inVideo || inExt)) { e.preventDefault(); (inVideo ? $('#btnPlay') : $('#rToggle')).click(); }
-    else if (e.key === 'ArrowLeft' && (inVideo || inExt)) skip(-10);
-    else if (e.key === 'ArrowRight' && (inVideo || inExt)) skip(10);
-    else if (e.key === 'f' && inVideo) $('#btnFs').click();
+    if (/INPUT|TEXTAREA|SELECT|BUTTON/.test(document.activeElement.tagName) || e.ctrlKey || e.metaKey || e.altKey) return;
+    if (e.code === 'Space' && playable()) { e.preventDefault(); togglePlay(); }
+    else if (e.key === 'ArrowLeft' && playable()) { e.preventDefault(); skip(-10); }
+    else if (e.key === 'ArrowRight' && playable()) { e.preventDefault(); skip(10); }
+    else if (e.key === 'f' && fsAllowed()) toggleFs();
   });
 
   // drift correction
   setInterval(() => { if (S.mode === 'video' && S.src) send({ t: 'sync' }); }, 5000);
 
-  // ---------- remote control for extension-synced players (e.g. vidbox) ----------
-  const E = { present: false, muted: false, pings: 0, timer: 0, state: { playing: false, pos: 0, at: 0 } };
-  const cmd = (action, delta) => { if (canControl()) send({ t: 'cmd', action, delta }); };
-  $('#rBack').onclick = () => cmd('skip', -10);
-  $('#rFwd').onclick = () => cmd('skip', 10);
-  $('#rToggle').onclick = () => cmd(E.state.playing ? 'pause' : 'play');
-  $('#rMute').onclick = () => {
-    if (!E.present) return toast('Extension not detected on this page. Reload this page after installing it.', 6000);
-    window.postMessage({ wt: 'page', type: 'mute', muted: !E.muted }, location.origin);
-  };
-  function setExtState(s) {
-    E.state = { playing: !!s.playing, pos: s.pos || 0, at: performance.now() };
-    renderExtClock();
+  // ---------- playback controls: the strip under the player ----------
+  // 'local'  = the built-in player on this page (a direct link was loaded)
+  // 'remote' = the movie plays in people's own browsers: extension sync, or the sharer's tab
+  //            during a screen share. Buttons send a command that the extension carries out.
+  // 'off'    = nothing to control yet
+  const E = { present: false, muted: false, pings: 0, timer: 0 };
+  const cmd = (action, delta) => send({ t: 'cmd', action, delta });
+  const extCount = () => S.members.filter((m) => m.ext).length;
+  const isSharingMe = () => S.mode === 'screen' && S.sharer === S.id;
+  const isViewingScreen = () => S.mode === 'screen' && S.sharer !== S.id;
+  function controlKind() {
+    if (S.mode === 'video' && S.src) return 'local';
+    if (S.mode === 'ext' || S.mode === 'screen') return 'remote';
+    return 'off';
   }
-  function renderExtClock() {
-    const pos = E.state.pos + (E.state.playing ? (performance.now() - E.state.at) / 1000 : 0);
-    $('#extClock').textContent = fmt(pos);
-    const t = $('#rToggle');
-    t.firstElementChild.textContent = E.state.playing ? '⏸' : '▶';
-    t.lastElementChild.textContent = E.state.playing ? 'Pause' : 'Play';
+  function playable() {
+    const k = controlKind();
+    return canControl() && (k === 'local' || (k === 'remote' && extCount() > 0));
   }
-  setInterval(() => { if (S.mode === 'ext') renderExtClock(); }, 500);
+  const fsAllowed = () => controlKind() === 'local' || (isViewingScreen() && !!video.srcObject);
+  const roomPos = () => S.room.pos + (S.room.playing ? (performance.now() - S.room.at) / 1000 : 0);
+  function setRoomState(s) {
+    S.room = { playing: !!s.playing, pos: s.pos || 0, at: performance.now(), known: s.known !== false };
+    renderControls();
+  }
+  function hintText() {
+    const k = controlKind();
+    if (k === 'off') return 'Load a link, share a tab, or join this room from the extension to use these.';
+    if (!canControl()) return 'Only the host can control playback. The host can tick "Let everyone control".';
+    if (k === 'remote' && !extCount()) {
+      return S.mode === 'screen'
+        ? 'To pause the shared movie from here, the person sharing also joins this room from the extension.'
+        : 'Waiting for someone to join from the extension…';
+    }
+    return '';
+  }
+  function togglePlay() {
+    if (!playable()) return toast(hintText(), 6000);
+    if (controlKind() === 'local') { if (video.paused) video.play().catch(() => {}); else video.pause(); }
+    else cmd(S.room.known && S.room.playing ? 'pause' : 'play');
+  }
+  // skip goes through the server so every player jumps by the same amount
+  function skip(d) {
+    if (!playable()) return toast(hintText(), 6000);
+    cmd('skip', d);
+  }
+  // what "mute" means here: this page's video, or (extension sync) the movie in my own vidbox tab
+  function muteTarget() {
+    if (controlKind() === 'local' || (isViewingScreen() && video.srcObject)) return 'video';
+    if (S.mode === 'ext') return 'ext';
+    return null;      // e.g. I'm the one sharing: muting my tab would mute it for everyone
+  }
+  function toggleMute() {
+    const t = muteTarget();
+    if (t === 'video') { video.muted = !video.muted; syncMute(); renderControls(); }
+    else if (t === 'ext') {
+      if (!E.present) return toast('Extension not detected on this page. Reload this page after installing it.', 6000);
+      window.postMessage({ wt: 'page', type: 'mute', muted: !E.muted }, location.origin);
+    }
+  }
+  function toggleFs() {
+    if (document.fullscreenElement) document.exitFullscreen();
+    else $('#player').requestFullscreen().catch(() => {});
+  }
+
+  let cDragging = false;
+  function renderControls() {
+    const k = controlKind(), ok = playable();
+    ['#cBack', '#cPlay', '#cFwd'].forEach((id) => { $(id).disabled = !ok; });
+    const playing = k === 'local' ? !video.paused : (k === 'remote' && S.room.known && S.room.playing);
+    $('#cPlay').textContent = playing ? '❚❚' : '▶';
+    $('#cPlay').title = (playing ? 'Pause' : 'Play') + ' (Space)';
+    $('#cSeek').hidden = k !== 'local';
+    if (k === 'local') {
+      $('#cSeek').max = video.duration || 0;
+      if (!cDragging) $('#cSeek').value = video.currentTime;
+      $('#cSeek').disabled = !ok;
+      $('#cTime').textContent = `${fmt(video.currentTime)} / ${fmt(video.duration)}`;
+    } else {
+      $('#cTime').textContent = k === 'remote' && S.room.known ? fmt(roomPos()) : '--:--';
+    }
+    $('#cHint').textContent = hintText();
+
+    const mt = muteTarget();
+    const muted = !!mt && (mt === 'ext' ? E.muted : (video.muted || video.volume === 0));
+    $('#cMute').disabled = !mt;
+    $('#cMute').textContent = muted ? '🔇' : '🔊';
+    $('#cMute').classList.toggle('muted', muted);
+    $('#cMute').title = mt === 'ext' ? 'Mute / unmute the movie in this browser only'
+      : mt ? 'Mute / unmute'
+      : isSharingMe() ? 'Mute the movie in its own tab if needed (muting here would mute it for everyone)'
+      : 'Nothing to mute yet';
+    $('#cVol').disabled = mt !== 'video';
+    if (mt === 'video' && document.activeElement !== $('#cVol')) $('#cVol').value = video.muted ? 0 : video.volume;
+    $('#cFs').disabled = !fsAllowed();
+
+    $('#extClock').textContent = S.room.known ? fmt(roomPos()) : '--:--';
+    $('#shareCtlNote').textContent = extCount() > 0
+      ? '✓ Your partner can play, pause and skip too: the extension in your browser carries it out.'
+      : 'Want your partner to be able to pause? Join this room from the Chrome extension in this browser as well.';
+  }
+  $('#cPlay').onclick = togglePlay;
+  $('#cBack').onclick = () => skip(-10);
+  $('#cFwd').onclick = () => skip(10);
+  $('#cSeek').addEventListener('input', () => { cDragging = true; $('#cTime').textContent = `${fmt($('#cSeek').value)} / ${fmt(video.duration)}`; });
+  $('#cSeek').addEventListener('change', () => {
+    cDragging = false;
+    if (playable() && controlKind() === 'local') video.currentTime = Number($('#cSeek').value);
+  });
+  $('#cMute').onclick = toggleMute;
+  $('#cVol').oninput = () => { video.volume = Number($('#cVol').value); video.muted = video.volume === 0; syncMute(); renderControls(); };
+  $('#cFs').onclick = toggleFs;
+  ['play', 'pause', 'timeupdate', 'volumechange', 'loadedmetadata', 'emptied'].forEach((ev) => video.addEventListener(ev, renderControls));
+  setInterval(() => { if (S.mode === 'ext' || S.mode === 'screen') renderControls(); }, 500);
+
   function renderExt() {
-    $('#rMute').textContent = E.muted ? '🔇 Unmute my movie' : '🔊 Mute my movie';
-    $('#rMute').classList.toggle('muted', E.muted);
     $('#extStatus').textContent = E.present
       ? '✓ Extension detected in this browser'
-      : 'Extension not detected here. It is only needed for "Mute my movie".';
+      : 'Tip: with the extension in this browser too, the mute button mutes your own movie.';
+    renderControls();
   }
   // The extension's content script answers these messages on this page.
   window.addEventListener('message', (e) => {

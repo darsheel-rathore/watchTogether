@@ -13,6 +13,7 @@
   let last = null;        // last known room state {playing,pos,at}
   let pending = null;     // state to apply once the video has metadata
   let lastArea = 0;
+  let cmdUntil = 0;       // while a room-page command is being applied, our own events are not "user" events
   const expect = { play: 0, pause: 0, seek: 0 };
   const now = () => performance.now();
 
@@ -102,8 +103,29 @@
       if (!active) hideTap();
     } else if (m.type === 'localMute') {
       if (video) video.muted = !!m.muted;       // local only: "mute my movie" from the room page
+    } else if (m.type === 'remote') {
+      // Play / Pause / ±10s pressed on the room web page (also how a viewer controls a screen share)
+      if (!active || !video) return;
+      cmdUntil = Date.now() + 1500;
+      toast(m.action === 'play' ? `${m.by} pressed play`
+        : m.action === 'pause' ? `${m.by} paused`
+        : `${m.by} skipped ${m.delta > 0 ? '+' : ''}${m.delta}s`);
+      if (m.action === 'play') video.play().then(hideTap).catch(showTap);
+      else if (m.action === 'pause') video.pause();
+      else if (m.action === 'skip') {
+        const end = Number.isFinite(video.duration) ? video.duration - 0.5 : Infinity;
+        try { video.currentTime = Math.max(0, Math.min(end, video.currentTime + (Number(m.delta) || 0))); } catch (e) { /* not seekable */ }
+      }
+      // tell the room where the movie really is now (once, after it settles)
+      setTimeout(reportOwn, 500);
     } else if (m.type === 'state') {
       if (!active || !video) return;
+      if (m.known === false) {
+        // The room has never heard a real position (fresh room, or a screen share just started).
+        // Don't jump the movie to 0:00. Instead, teach the room where this player is.
+        if (m.action === 'welcome') reportOwn();
+        return;
+      }
       const s = { playing: m.playing, pos: m.pos, at: now() };
       last = s;
       if (m.action !== 'sync' && m.by) {
@@ -116,8 +138,17 @@
   }
 
   // ---------- what the person did on their own player ----------
+  // Send this player's real position/state to the room (only if we're allowed to control).
+  function reportOwn() {
+    if (!active || !port || !video || !canCtl || video.readyState === 0) return;
+    const action = video.paused ? 'pause' : 'play';
+    try { port.postMessage({ type: 'ctl', action, time: video.currentTime }); } catch (e) { /* ignore */ }
+    last = { playing: !video.paused, pos: video.currentTime, at: now() };
+  }
+
   function userEvt(action) {
     if (wasExpected(action)) return;
+    if (Date.now() < cmdUntil) return;   // caused by a room-page command; reportOwn() covers it
     if (!active || !port || !video) return;
     if (!canCtl) {
       toast("You don't have control right now");

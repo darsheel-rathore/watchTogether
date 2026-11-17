@@ -47,7 +47,8 @@ let nextId = 1;
 const now = () => Date.now();
 const send = (ws, obj) => { if (ws.readyState === 1) ws.send(JSON.stringify(obj)); };
 const curPos = (r) => (r.state.playing ? r.state.time + (now() - r.state.ts) / 1000 : r.state.time);
-const pubState = (r) => ({ src: r.state.src, playing: r.state.playing, pos: curPos(r) });
+// known = the position is real (a player reported it), not just the 0:00 a room starts with
+const pubState = (r) => ({ src: r.state.src, playing: r.state.playing, pos: curPos(r), known: !!r.state.known });
 const membersList = (r) => [...r.members.values()].map((m) => ({
   id: m.id, name: m.name, ext: !!m.ext, voice: !!m.voice, muted: !!m.muted,
 }));
@@ -124,7 +125,7 @@ wss.on('connection', (ws, req) => {
         if (pw.length < 4) return fail('bad-password', 'A room needs a password of at least 4 characters.');
         // extension rooms start with shared control (a couple watching together); host can lock it
         target = { code, password: pw, members: new Map(), hostId: null, everyone: isExt, mode: 'none', sharer: null,
-                   state: { src: null, playing: false, time: 0, ts: now() }, chat: [] };
+                   state: { src: null, playing: false, time: 0, ts: now(), known: false }, chat: [] };
         rooms.set(code, target);
       } else if (target.password) {
         if (lockedOut(addr, code)) return fail('too-many', 'Too many wrong passwords. Wait a few minutes and try again.');
@@ -155,10 +156,12 @@ wss.on('connection', (ws, req) => {
     switch (m.t) {
       case 'ctl': {
         if (!canControl(room, me.id)) return;
-        // 'video' = built-in player (needs a loaded src); 'ext' = players driven by the extension
-        if (!(room.mode === 'ext' || (room.mode === 'video' && room.state.src))) return;
+        // 'video' = built-in player (needs a loaded src); 'ext' = players driven by the extension;
+        // 'screen' = the sharer's own player, driven by their extension
+        if (!(room.mode === 'ext' || room.mode === 'screen' || (room.mode === 'video' && room.state.src))) return;
         const time = Number(m.time); if (!Number.isFinite(time)) return;
         const s = room.state;
+        s.known = true;
         if (m.action === 'play') { s.playing = true; s.time = time; s.ts = now(); }
         else if (m.action === 'pause') { s.playing = false; s.time = time; s.ts = now(); }
         else if (m.action === 'seek') { s.time = time; s.ts = now(); }
@@ -171,7 +174,7 @@ wss.on('connection', (ws, req) => {
         let url;
         try { url = new URL(String(m.url || '').trim()); } catch { return send(ws, { t: 'error', msg: 'That is not a valid link.' }); }
         if (!/^https?:$/.test(url.protocol)) return send(ws, { t: 'error', msg: 'Link must start with http(s)://' });
-        room.state = { src: url.href, playing: false, time: 0, ts: now() };
+        room.state = { src: url.href, playing: false, time: 0, ts: now(), known: true };
         room.sharer = null; room.mode = 'video';
         broadcast(room, { t: 'mode', mode: 'video', sharer: null });
         broadcast(room, { t: 'state', ...pubState(room), action: 'load', by: me.name });
@@ -180,19 +183,30 @@ wss.on('connection', (ws, req) => {
       }
       case 'sync': send(ws, { t: 'state', ...pubState(room), action: 'sync' }); break;
       case 'cmd': {
-        // remote-control buttons on the web page: play / pause / skip +-N seconds.
-        // Works for the built-in player and for extension-synced players (e.g. vidbox).
+        // Control buttons on the web page: play / pause / skip +-N seconds.
         if (!canControl(room, me.id)) return;
-        if (!(room.mode === 'ext' || (room.mode === 'video' && room.state.src))) return;
-        const s = room.state, pos = curPos(room);
-        if (m.action === 'play') { s.time = pos; s.playing = true; s.ts = now(); }
-        else if (m.action === 'pause') { s.time = pos; s.playing = false; s.ts = now(); }
-        else if (m.action === 'skip') {
-          const d = Math.max(-600, Math.min(600, Number(m.delta) || 0));
-          s.time = Math.max(0, pos + d); s.ts = now();
-        } else return;
-        // sent to everyone, including the sender (their own player must move too)
-        broadcast(room, { t: 'state', ...pubState(room), action: m.action === 'skip' ? 'seek' : m.action, by: me.name });
+        const act = m.action;
+        if (!['play', 'pause', 'skip'].includes(act)) return;
+        const d = Math.max(-600, Math.min(600, Number(m.delta) || 0));
+
+        if (room.mode === 'video' && room.state.src) {
+          // built-in player: the server's clock is the truth, so send the new position
+          const s = room.state, pos = curPos(room);
+          if (act === 'play') { s.time = pos; s.playing = true; }
+          else if (act === 'pause') { s.time = pos; s.playing = false; }
+          else s.time = Math.max(0, pos + d);
+          s.ts = now(); s.known = true;
+          // sent to everyone, including the sender (their own player must move too)
+          broadcast(room, { t: 'state', ...pubState(room), action: act === 'skip' ? 'seek' : act, by: me.name });
+        } else if (room.mode === 'ext' || room.mode === 'screen') {
+          // Players live in people's own browsers (vidbox tab). Only they know the real position,
+          // so send the command itself; each extension applies it and reports back where it is.
+          // In screen-share mode this is what lets the viewer pause the sharer's movie.
+          if (![...room.members.values()].some((x) => x.ext)) {
+            return send(ws, { t: 'error', msg: "Nobody in this room has the extension running, so the movie can't be controlled from here." });
+          }
+          broadcast(room, { t: 'remote', action: act, delta: d, by: me.name });
+        }
         break;
       }
       case 'page': {
@@ -201,7 +215,7 @@ wss.on('connection', (ws, req) => {
         let url;
         try { url = new URL(String(m.url || '').trim()); } catch { return; }
         if (!/^https?:$/.test(url.protocol) || url.href.length > 2000) return;
-        room.state = { src: url.href, playing: false, time: 0, ts: now() };
+        room.state = { src: url.href, playing: false, time: 0, ts: now(), known: false };
         broadcast(room, { t: 'page', url: url.href, by: me.name });
         break;
       }
@@ -215,7 +229,7 @@ wss.on('connection', (ws, req) => {
         if (!canControl(room, me.id)) return send(ws, { t: 'error', code: 'denied', msg: 'You do not have control.' });
         if (room.sharer != null && room.sharer !== me.id) return send(ws, { t: 'error', code: 'busy', msg: 'Someone else is already sharing.' });
         room.sharer = me.id; room.mode = 'screen';
-        room.state = { src: null, playing: false, time: 0, ts: now() };
+        room.state = { src: null, playing: false, time: 0, ts: now(), known: false };
         broadcast(room, { t: 'mode', mode: 'screen', sharer: me.id });
         send(ws, { t: 'viewers', ids: [...room.members.keys()].filter((i) => i !== me.id) });
         sysChat(room, `${me.name} started sharing their screen`);

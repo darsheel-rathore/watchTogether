@@ -68,7 +68,7 @@ function elect() {
   const changed = best !== active;
   active = best;
   for (const v of videos) post(v.port, { type: 'config', active: v === active, canControl: canControl() });
-  if (changed && active) post(active.port, { type: 'state', playing: st.media.playing, pos: curPos(), action: 'welcome' });
+  if (changed && active) post(active.port, { type: 'state', playing: st.media.playing, pos: curPos(), action: 'welcome', known: !!st.media.known });
   pushPopups();
 }
 
@@ -125,7 +125,7 @@ function onServer(m) {
     case 'welcome':
       Object.assign(st, { id: m.id, hostId: m.hostId, everyone: m.everyone, mode: m.mode, members: m.members,
         connected: true, error: '', lastEvent: '', pageNew: false, pageBy: '' });
-      st.media = { src: m.state.src, playing: m.state.playing, pos: m.state.pos, at: Date.now() };
+      st.media = { src: m.state.src, playing: m.state.playing, pos: m.state.pos, at: Date.now(), known: !!m.state.known };
       elect();
       break;
     case 'members':
@@ -134,14 +134,23 @@ function onServer(m) {
       break;
     case 'mode': st.mode = m.mode; pushPopups(); break;
     case 'state': {
-      st.media = { src: m.src || st.media.src, playing: m.playing, pos: m.pos, at: Date.now() };
+      st.media = { src: m.src || st.media.src, playing: m.playing, pos: m.pos, at: Date.now(), known: m.known !== false };
       if (m.action !== 'sync' && m.by) st.lastEvent = eventText(m);
-      if (active) post(active.port, { type: 'state', playing: m.playing, pos: m.pos, action: m.action, by: m.by });
+      if (active) post(active.port, { type: 'state', playing: m.playing, pos: m.pos, action: m.action, by: m.by, known: m.known !== false });
       if (m.action !== 'sync') pushPopups();
       break;
     }
+    case 'remote': {
+      // a Play / Pause / ±10s button pressed on the room web page
+      const what = m.action === 'play' ? 'pressed play' : m.action === 'pause' ? 'paused'
+        : `skipped ${m.delta > 0 ? '+' : ''}${m.delta}s`;
+      st.lastEvent = `${m.by} ${what} (from the room page)`;
+      if (active) post(active.port, { type: 'remote', action: m.action, delta: m.delta, by: m.by });
+      pushPopups();
+      break;
+    }
     case 'page': {
-      st.media = { src: m.url, playing: false, pos: 0, at: Date.now() };
+      st.media = { src: m.url, playing: false, pos: 0, at: Date.now(), known: false };
       if (ignorePageEcho === m.url) { ignorePageEcho = null; st.pageNew = false; }
       else { st.pageBy = m.by; st.pageNew = true; }
       pushPopups();
@@ -175,7 +184,7 @@ function onVideoMsg(v, m) {
     if (v !== active || !canControl()) return;
     if (m.action === 'play' || m.action === 'pause' || m.action === 'seek') {
       st.media = { src: st.media.src, playing: m.action === 'play' ? true : m.action === 'pause' ? false : st.media.playing,
-        pos: m.time, at: Date.now() };
+        pos: m.time, at: Date.now(), known: true };
       send({ t: 'ctl', action: m.action, time: m.time });
     }
   } else if (m.type === 'sync') {
