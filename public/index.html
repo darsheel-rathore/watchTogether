@@ -1,0 +1,104 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Watch Together</title>
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+
+<!-- Landing -->
+<main id="landing" class="landing">
+  <div class="card">
+    <h1>Watch Together</h1>
+    <p class="muted" id="landingSub">Make a room, send the link, watch in sync.</p>
+    <label>Your name
+      <input id="name" maxlength="24" placeholder="e.g. Darsheel" autocomplete="off">
+    </label>
+    <div id="createBlock">
+      <button id="btnCreate" class="primary">Create a room</button>
+      <div class="or"><span>or join with a code</span></div>
+      <div class="row">
+        <input id="codeInput" maxlength="12" placeholder="ROOM CODE" autocomplete="off">
+        <button id="btnJoin">Join</button>
+      </div>
+    </div>
+    <button id="btnJoinLink" class="primary" hidden>Join room</button>
+  </div>
+</main>
+
+<!-- Room -->
+<div id="room" class="room" hidden>
+  <header>
+    <div class="brand">Watch Together</div>
+    <div class="code">Room <b id="roomCode"></b></div>
+    <button id="btnCopy">Copy invite link</button>
+    <label id="everyoneWrap" class="toggle" hidden>
+      <input type="checkbox" id="everyone"> Let everyone control
+    </label>
+    <span class="spacer"></span>
+    <span id="status" class="muted"></span>
+  </header>
+
+  <section class="main">
+    <div class="left">
+      <div class="toolbar">
+        <form id="loadForm" class="row grow">
+          <input id="urlInput" placeholder="Paste a direct video link (.mp4 / .webm / .m3u8)…" autocomplete="off">
+          <button type="submit" id="btnLoad">Load</button>
+        </form>
+        <button id="btnShare" class="accent">Share my screen / tab</button>
+        <a class="btn" href="https://vidbox.wtf/" target="_blank" rel="noopener">Open vidbox.wtf ↗</a>
+      </div>
+
+      <div id="player" class="player">
+        <video id="video" playsinline></video>
+
+        <div id="idle" class="overlay">
+          <h2>Nothing playing yet</h2>
+          <ol>
+            <li><b>For vidbox / any website:</b> click <i>Open vidbox.wtf</i>, start the movie there, come back here and press <i>Share my screen / tab</i> → pick that tab → tick <i>Share tab audio</i>.</li>
+            <li><b>For a direct video link:</b> paste it above and press Load. Play / pause / seek stays in sync for both of you.</li>
+          </ol>
+        </div>
+        <div id="sharingMe" class="overlay" hidden>
+          <h2>You are sharing</h2>
+          <p>Go to the movie tab and play it. Everyone here sees it live and hears the sound.<br>Your pause = their pause.</p>
+          <button id="btnStopShare" class="danger">Stop sharing</button>
+        </div>
+        <div id="waitStream" class="overlay" hidden>
+          <h2>Connecting to the stream…</h2>
+          <p class="muted">If this takes more than a few seconds, ask the host to stop and share again.</p>
+        </div>
+        <button id="tap" class="tap" hidden>▶ Tap to start</button>
+
+        <div id="bar" class="bar" hidden>
+          <button id="btnPlay" title="Play / pause">▶</button>
+          <input id="seek" type="range" min="0" max="0" step="0.1" value="0">
+          <span id="time" class="time">0:00 / 0:00</span>
+          <button id="btnMute" title="Mute">🔊</button>
+          <input id="vol" type="range" min="0" max="1" step="0.05" value="1">
+          <button id="btnFs" title="Fullscreen">⛶</button>
+        </div>
+      </div>
+      <div id="who" class="muted small"></div>
+    </div>
+
+    <aside class="side">
+      <h3>People</h3>
+      <ul id="members"></ul>
+      <h3>Chat</h3>
+      <div id="chat" class="chat"></div>
+      <form id="chatForm" class="row">
+        <input id="chatInput" placeholder="Say something…" autocomplete="off" maxlength="500">
+        <button type="submit">Send</button>
+      </form>
+    </aside>
+  </section>
+</div>
+
+<div id="toast" class="toast" hidden></div>
+<script src="/app.js"></script>
+</body>
+</html>
