@@ -75,6 +75,8 @@ button.leave:hover { background: #d03a3f; border-color: #d03a3f; }
 .player { position: relative; background: #000; border-radius: 14px; overflow: hidden; aspect-ratio: 16/9; width: 100%; max-height: calc(100vh - 210px); margin: 0 auto; border: 1px solid var(--line); }
 .player video { width: 100%; height: 100%; object-fit: contain; background: #000; display: none; }
 .player.has-video video { display: block; }
+/* rotated picture: centred, sized by script (width/height swapped for 90/270 degrees) */
+.player video.rotated { position: absolute; left: 50%; top: 50%; max-width: none; max-height: none; }
 .overlay { position: absolute; inset: 0; display: grid; align-content: center; justify-items: center; gap: 12px; padding: 24px; text-align: center; overflow: auto;
   background: radial-gradient(circle at 50% 25%, #1b2030, #0a0c11); }
 .overlay h2 { margin: 0; } .overlay p { margin: 0; color: var(--muted); max-width: 520px; }

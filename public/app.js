@@ -239,7 +239,10 @@
 
   function onMode(mode, sharer) {
     const prev = S.mode;
-    if (prev !== mode || S.sharer !== sharer) S.room = { playing: false, pos: 0, at: performance.now(), known: false };
+    if (prev !== mode || S.sharer !== sharer) {
+      S.room = { playing: false, pos: 0, at: performance.now(), known: false };
+      resetRotation();          // a new stream / video starts upright
+    }
     S.mode = mode; S.sharer = sharer;
     if (S.localStream && sharer !== S.id) stopLocalStream();
     if (prev === 'screen' && (mode !== 'screen' || sharer !== (S.viewerPc && S.viewerPc._from))) closeViewerPc();
@@ -428,6 +431,7 @@
     else if (e.key === 'ArrowLeft' && playable()) { e.preventDefault(); skip(-10); }
     else if (e.key === 'ArrowRight' && playable()) { e.preventDefault(); skip(10); }
     else if (e.key === 'f' && fsAllowed()) toggleFs();
+    else if (e.key === 'r' && fsAllowed()) { rotate(); renderControls(); }
   });
 
   // drift correction
@@ -498,6 +502,29 @@
     else $('#player').requestFullscreen().catch(() => {});
   }
 
+  // ---------- rotate the picture ----------
+  // A shared tablet/phone screen (or a player that turns itself for "landscape") can arrive
+  // sideways. Rotation only changes how it's shown on THIS screen.
+  let rotation = 0;
+  function applyRotation() {
+    const p = $('#player');
+    video.classList.toggle('rotated', rotation !== 0);
+    if (!rotation) { video.style.transform = video.style.width = video.style.height = ''; return; }
+    const sideways = rotation % 180 !== 0;
+    // lay the video out in a box with width/height swapped, then turn it to fill the player
+    video.style.width = (sideways ? p.clientHeight : p.clientWidth) + 'px';
+    video.style.height = (sideways ? p.clientWidth : p.clientHeight) + 'px';
+    video.style.transform = `translate(-50%, -50%) rotate(${rotation}deg)`;
+  }
+  function rotate() {
+    if (!fsAllowed()) return;
+    rotation = (rotation + 90) % 360;
+    applyRotation();
+    toast(rotation ? `Picture rotated ${rotation}°` : 'Picture back to normal', 2000);
+  }
+  function resetRotation() { if (rotation) { rotation = 0; applyRotation(); } }
+  new ResizeObserver(() => { if (rotation) applyRotation(); }).observe($('#player'));
+
   let cDragging = false;
   function renderControls() {
     const k = controlKind(), ok = playable();
@@ -528,6 +555,8 @@
     $('#cVol').disabled = mt !== 'video';
     if (mt === 'video' && document.activeElement !== $('#cVol')) $('#cVol').value = video.muted ? 0 : video.volume;
     $('#cFs').disabled = !fsAllowed();
+    $('#cRot').disabled = !fsAllowed();
+    $('#cRot').title = (rotation ? `Rotated ${rotation}°. ` : 'Picture sideways? ') + 'Rotate it 90° (R)';
 
     $('#extClock').textContent = S.room.known ? fmt(roomPos()) : '--:--';
     $('#shareCtlNote').textContent = extCount() > 0
@@ -545,6 +574,7 @@
   $('#cMute').onclick = toggleMute;
   $('#cVol').oninput = () => { video.volume = Number($('#cVol').value); video.muted = video.volume === 0; syncMute(); renderControls(); };
   $('#cFs').onclick = toggleFs;
+  $('#cRot').onclick = () => { rotate(); renderControls(); };
   ['play', 'pause', 'timeupdate', 'volumechange', 'loadedmetadata', 'emptied'].forEach((ev) => video.addEventListener(ev, renderControls));
   setInterval(() => { if (S.mode === 'ext' || S.mode === 'screen') renderControls(); }, 500);
 
