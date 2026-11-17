@@ -62,6 +62,18 @@
             <li><b>For a direct video link:</b> paste it above and press Load. Play / pause / seek stays in sync for both of you.</li>
           </ol>
         </div>
+        <div id="extPanel" class="overlay" hidden>
+          <h2>Synced through the extension</h2>
+          <p>The movie plays in each person's own vidbox tab. These buttons control everyone's player.</p>
+          <div class="remote">
+            <button id="rBack">⏪ 10s</button>
+            <button id="rPlay">▶ Play</button>
+            <button id="rPause">⏸ Pause</button>
+            <button id="rFwd">10s ⏩</button>
+          </div>
+          <div class="remote"><button id="rMute">🔊 Mute my movie</button></div>
+          <p id="extStatus" class="muted small"></p>
+        </div>
         <div id="sharingMe" class="overlay" hidden>
           <h2>You are sharing</h2>
           <p>Go to the movie tab and play it. Everyone here sees it live and hears the sound.<br>Your pause = their pause.</p>
@@ -74,7 +86,9 @@
         <button id="tap" class="tap" hidden>▶ Tap to start</button>
 
         <div id="bar" class="bar" hidden>
+          <button id="btnBack" title="Back 10 seconds">⏪10</button>
           <button id="btnPlay" title="Play / pause">▶</button>
+          <button id="btnFwd" title="Forward 10 seconds">10⏩</button>
           <input id="seek" type="range" min="0" max="0" step="0.1" value="0">
           <span id="time" class="time">0:00 / 0:00</span>
           <button id="btnMute" title="Mute">🔊</button>
@@ -88,6 +102,16 @@
     <aside class="side">
       <h3>People</h3>
       <ul id="members"></ul>
+      <p id="extNote" class="muted small" hidden></p>
+      <div class="voice">
+        <button id="btnVoice">🎤 Join voice</button>
+        <div id="voiceOn" class="row" hidden>
+          <button id="btnMute">Mute</button>
+          <button id="btnVoiceLeave">Leave voice</button>
+        </div>
+        <p class="muted small">Use headphones so the movie doesn't echo into the mic.</p>
+      </div>
+      <div id="audioBox" hidden></div>
       <h3>Chat</h3>
       <div id="chat" class="chat"></div>
       <form id="chatForm" class="row">

@@ -1,0 +1,64 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Watch Together Sync</title>
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <h1>Watch Together <span>Sync</span></h1>
+
+  <!-- not in a room -->
+  <section id="joinView" hidden>
+    <label>Server or invite link
+      <input id="server" placeholder="https://xxxx.ngrok-free.app/room/ABC123" autocomplete="off" spellcheck="false">
+    </label>
+    <label>Room code
+      <div class="row">
+        <input id="room" maxlength="12" placeholder="ABC123" autocomplete="off" spellcheck="false">
+        <button id="btnGen" type="button" title="Make a new code">New</button>
+      </div>
+    </label>
+    <label>Your name
+      <input id="name" maxlength="24" placeholder="e.g. Darsheel" autocomplete="off">
+    </label>
+    <button id="btnJoin" class="primary">Join room</button>
+    <p id="joinErr" class="err" hidden></p>
+    <p class="hint">Paste the invite link your partner sent, or the server address plus a room code.</p>
+  </section>
+
+  <!-- in a room -->
+  <section id="roomView" hidden>
+    <div class="status"><span id="dot" class="dot"></span><span id="statusText"></span></div>
+    <p id="err" class="err" hidden></p>
+
+    <div class="row between">
+      <div>Room <b id="roomCode"></b></div>
+      <button id="btnInvite">Copy invite</button>
+    </div>
+
+    <h2>People</h2>
+    <ul id="members"></ul>
+    <label id="everyoneWrap" class="check" hidden>
+      <input type="checkbox" id="everyone"> Let everyone control playback
+    </label>
+    <p id="ctlNote" class="hint" hidden></p>
+
+    <h2>Video on this tab</h2>
+    <p id="videoState" class="hint"></p>
+
+    <h2>Movie page</h2>
+    <div id="pageRow" class="page" hidden>
+      <div class="pageText"><span id="pageBy"></span><span id="pageUrl" class="url"></span></div>
+      <button id="btnOpen">Open</button>
+    </div>
+    <button id="btnShare">Share this tab's page with the room</button>
+    <p class="hint">Open the movie's page (e.g. vidbox.wtf/movie/…) first, then share it so your partner can open the same one.</p>
+
+    <p id="lastEvent" class="hint"></p>
+    <button id="btnLeave" class="danger">Leave room</button>
+  </section>
+
+  <script src="popup.js"></script>
+</body>
+</html>

@@ -80,7 +80,7 @@
     ws.onmessage = (e) => handle(JSON.parse(e.data));
     ws.onclose = () => {
       if (S.ws !== ws) return;
-      cleanupRtc(); clearVideo();
+      cleanupRtc(); clearVideo(); leaveVoiceLocal();
       S.id = null; S.mode = 'none'; S.sharer = null; render();
       $('#status').textContent = 'Disconnected, reconnecting…';
       setTimeout(connect, Math.min(1000 * ++S.retry, 5000));
@@ -98,7 +98,9 @@
         break;
       case 'members':
         S.members = m.members; S.hostId = m.hostId; S.everyone = m.everyone;
-        renderMembers(); render(); break;
+        renderMembers(); render(); pruneVoicePeers(); break;
+      case 'voice-peers': m.ids.forEach(offerVoice); break;
+      case 'vrtc': onVoiceRtc(m.from, m.data); break;
       case 'chat': addChat(m); break;
       case 'mode': onMode(m.mode, m.sharer); break;
       case 'state':
@@ -140,7 +142,10 @@
     player.classList.toggle('has-video', hasVideo);
     player.classList.toggle('screen-viewer', viewingScreen);
     player.classList.toggle('no-control', !canControl());
-    $('#idle').hidden = S.mode !== 'none' && !(S.mode === 'video' && !S.src);
+    $('#idle').hidden = !(S.mode === 'none' || (S.mode === 'video' && !S.src));
+    $('#extPanel').hidden = S.mode !== 'ext';
+    ['#rBack', '#rPlay', '#rPause', '#rFwd'].forEach((id) => { $(id).disabled = !canControl(); });
+    if (S.mode === 'ext') startExtPing();
     $('#sharingMe').hidden = !sharingMe;
     $('#waitStream').hidden = !(viewingScreen && !video.srcObject);
     $('#bar').hidden = !hasVideo;
@@ -158,15 +163,20 @@
 
   function renderMembers() {
     const ul = $('#members'); ul.innerHTML = '';
-    S.members.forEach((m) => {
+    // extension clients are the same people as the page clients, so don't list them twice
+    S.members.filter((m) => !m.ext).forEach((m) => {
       const li = document.createElement('li');
       const dot = document.createElement('span'); dot.className = 'dot';
       const nm = document.createElement('span'); nm.textContent = m.name + (m.id === S.id ? ' (you)' : '');
       li.append(dot, nm);
       if (m.id === S.hostId) { const b = document.createElement('span'); b.className = 'badge host'; b.textContent = 'host'; li.append(b); }
       else if (S.everyone) { const b = document.createElement('span'); b.className = 'badge ctl'; b.textContent = 'can control'; li.append(b); }
+      if (m.voice) { const v = document.createElement('span'); v.className = 'vmark'; v.textContent = m.muted ? '🔇' : '🎤'; v.title = m.muted ? 'muted' : 'in voice'; li.append(v); }
       ul.append(li);
     });
+    const ext = S.members.filter((m) => m.ext);
+    $('#extNote').hidden = !ext.length;
+    $('#extNote').textContent = ext.length ? 'Synced via extension: ' + ext.map((m) => m.name).join(', ') : '';
   }
 
   function addChat(m) {
@@ -275,6 +285,10 @@
   video.addEventListener('play', () => ($('#btnPlay').textContent = '❚❚'));
   video.addEventListener('pause', () => ($('#btnPlay').textContent = '▶'));
   $('#btnPlay').onclick = () => { if (!canControl()) return; video.paused ? video.play().catch(() => {}) : video.pause(); };
+  // skip buttons go through the server so every player jumps to the same spot
+  const skip = (d) => { if (canControl()) send({ t: 'cmd', action: 'skip', delta: d }); };
+  $('#btnBack').onclick = () => skip(-10);
+  $('#btnFwd').onclick = () => skip(10);
   $('#seek').addEventListener('input', () => { dragging = true; $('#time').textContent = `${fmt($('#seek').value)} / ${fmt(video.duration)}`; });
   $('#seek').addEventListener('change', () => { dragging = false; if (canControl()) video.currentTime = Number($('#seek').value); });
   $('#vol').oninput = () => { video.volume = Number($('#vol').value); video.muted = video.volume === 0; syncMute(); };
@@ -384,6 +398,157 @@
       }
     } catch (e) { console.error(e); }
   }
+
+  // ---------- remote control for extension-synced players (e.g. vidbox) ----------
+  const E = { present: false, muted: false, pings: 0, timer: 0 };
+  const cmd = (action, delta) => { if (canControl()) send({ t: 'cmd', action, delta }); };
+  $('#rBack').onclick = () => cmd('skip', -10);
+  $('#rFwd').onclick = () => cmd('skip', 10);
+  $('#rPlay').onclick = () => cmd('play');
+  $('#rPause').onclick = () => cmd('pause');
+  $('#rMute').onclick = () => {
+    if (!E.present) return toast('Extension not detected on this page. Reload this page after installing it.', 6000);
+    window.postMessage({ wt: 'page', type: 'mute', muted: !E.muted }, location.origin);
+  };
+  function renderExt() {
+    $('#rMute').textContent = E.muted ? '🔇 Unmute my movie' : '🔊 Mute my movie';
+    $('#rMute').classList.toggle('muted', E.muted);
+    $('#extStatus').textContent = E.present
+      ? '✓ Extension detected in this browser'
+      : 'Extension not detected here. It is only needed for "Mute my movie".';
+  }
+  // The extension's content script answers these messages on this page.
+  window.addEventListener('message', (e) => {
+    if (e.source !== window || !e.data || e.data.wt !== 'ext') return;
+    if (e.data.type === 'pong') { E.present = true; renderExt(); }
+    else if (e.data.type === 'muteResult') {
+      if (e.data.ok) { E.muted = e.data.muted; renderExt(); }
+      else toast('No movie found in this browser yet. Open it and press play first.', 6000);
+    }
+  });
+  function startExtPing() {
+    if (E.present || E.timer) return renderExt();
+    E.pings = 0;
+    const ping = () => {
+      window.postMessage({ wt: 'page', type: 'ping' }, location.origin);
+      if (E.present || ++E.pings > 5) { clearInterval(E.timer); E.timer = 0; }
+    };
+    E.timer = setInterval(ping, 1500); ping(); renderExt();
+  }
+
+  // ---------- voice chat (WebRTC audio, one connection per other person) ----------
+  const V = { on: false, muted: false, stream: null, pcs: new Map() };
+
+  function renderVoice() {
+    $('#btnVoice').hidden = V.on;
+    $('#voiceOn').hidden = !V.on;
+    const b = $('#btnMute');
+    b.textContent = V.muted ? '🔇 Unmute' : '🎤 Mute';
+    b.classList.toggle('muted', V.muted);
+    b.classList.toggle('live', !V.muted);
+  }
+
+  async function joinVoice() {
+    if (V.on) return;
+    if (S.id == null) return toast('Still connecting to the room. Try again in a second.');
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+      return toast('Microphone needs a secure page: use http://localhost or an https link.', 7000);
+    }
+    try {
+      V.stream = await navigator.mediaDevices.getUserMedia({
+        audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true }, video: false,
+      });
+    } catch (e) {
+      return toast(e.name === 'NotAllowedError' ? 'Microphone blocked. Allow it in the address bar and try again.' : 'Could not open the microphone: ' + e.message, 7000);
+    }
+    V.on = true; V.muted = false;
+    renderVoice();
+    send({ t: 'voice', on: true });          // server replies with who is already in voice
+  }
+
+  function leaveVoiceLocal() {
+    V.pcs.forEach((p) => closeVoicePeer(p));
+    V.pcs.clear();
+    if (V.stream) { V.stream.getTracks().forEach((t) => t.stop()); V.stream = null; }
+    V.on = false; V.muted = false;
+    renderVoice();
+  }
+  function leaveVoice() {
+    if (!V.on) return;
+    leaveVoiceLocal();
+    send({ t: 'voice', on: false });
+  }
+  function toggleMute() {
+    if (!V.on || !V.stream) return;
+    V.muted = !V.muted;
+    V.stream.getAudioTracks().forEach((t) => { t.enabled = !V.muted; });
+    renderVoice();
+    send({ t: 'mute', muted: V.muted });
+  }
+
+  function closeVoicePeer(p) {
+    try { p.pc.close(); } catch (e) { /* ignore */ }
+    if (p.audio) p.audio.remove();
+  }
+  function newVoicePeer(id) {
+    const old = V.pcs.get(id); if (old) closeVoicePeer(old);
+    const pc = new RTCPeerConnection(ICE);
+    const p = { pc, q: [], audio: null };
+    V.pcs.set(id, p);
+    V.stream.getAudioTracks().forEach((t) => pc.addTrack(t, V.stream));
+    pc.onicecandidate = (e) => e.candidate && send({ t: 'vrtc', to: id, data: { candidate: e.candidate } });
+    pc.ontrack = (e) => {
+      if (!p.audio) {
+        p.audio = document.createElement('audio');
+        p.audio.autoplay = true;
+        $('#audioBox').append(p.audio);
+      }
+      p.audio.srcObject = e.streams[0];
+      p.audio.play().catch(() => toast('Click anywhere on the page to hear voice chat.'));
+    };
+    return p;
+  }
+  async function offerVoice(id) {
+    if (!V.on) return;
+    const p = newVoicePeer(id);
+    try {
+      await p.pc.setLocalDescription(await p.pc.createOffer());
+      send({ t: 'vrtc', to: id, data: { sdp: p.pc.localDescription } });
+    } catch (e) { console.error(e); }
+  }
+  async function onVoiceRtc(from, data) {
+    if (!V.on) return;
+    try {
+      if (data.sdp && data.sdp.type === 'offer') {
+        const p = newVoicePeer(from);
+        await p.pc.setRemoteDescription(data.sdp);
+        for (const c of p.q) await p.pc.addIceCandidate(c).catch(() => {});
+        p.q = [];
+        await p.pc.setLocalDescription(await p.pc.createAnswer());
+        send({ t: 'vrtc', to: from, data: { sdp: p.pc.localDescription } });
+      } else if (data.sdp && data.sdp.type === 'answer') {
+        const p = V.pcs.get(from); if (!p) return;
+        await p.pc.setRemoteDescription(data.sdp);
+        for (const c of p.q) await p.pc.addIceCandidate(c).catch(() => {});
+        p.q = [];
+      } else if (data.candidate) {
+        const p = V.pcs.get(from); if (!p) return;
+        if (p.pc.remoteDescription) p.pc.addIceCandidate(data.candidate).catch(() => {}); else p.q.push(data.candidate);
+      }
+    } catch (e) { console.error(e); }
+  }
+  // drop connections to people who left voice or left the room
+  function pruneVoicePeers() {
+    V.pcs.forEach((p, id) => {
+      const m = S.members.find((x) => x.id === id);
+      if (!m || !m.voice) { closeVoicePeer(p); V.pcs.delete(id); }
+    });
+  }
+
+  $('#btnVoice').onclick = joinVoice;
+  $('#btnVoiceLeave').onclick = leaveVoice;
+  $('#btnMute').onclick = toggleMute;
+  renderVoice();
 
   render();
 })();
